@@ -356,10 +356,10 @@ async def context(app):
     ) as http:
         app["http"] = http
         app["telemetry"] = Telemetry(http, cfg.otlp_endpoint)
-        app["telemetry"].start()
         lifecycle = app.get("lifecycle") or Lifecycle(cfg, http)
         app["scheduler"] = Scheduler(cfg, lifecycle)
         await app["scheduler"].start()
+        app["telemetry"].start()
         pruner = asyncio.create_task(prune(app))
         try:
             yield

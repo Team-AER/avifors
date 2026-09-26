@@ -215,3 +215,70 @@ async def test_failed_activation_is_released():
         assert ("stop", "text", True) in life.events
     finally:
         await s.close()
+
+
+async def test_queue_deadline_expires_during_slow_activation():
+    cfg, life = config(), FakeLifecycle()
+    cfg.models["text"].queue_timeout = 0.05
+
+    async def slow(model):
+        life.owner = model.id
+        await asyncio.sleep(2)
+
+    life.activate = slow
+    s = Scheduler(cfg, life)
+    await s.start()
+    try:
+        started = time.monotonic()
+        j = s.enqueue(cfg.models["text"], "alice", 20, result)
+        with pytest.raises(Rejected, match="queue deadline"):
+            await j.future
+        assert time.monotonic() - started < 0.3
+        await until(lambda: s.current is None)
+        assert life.owner is None
+    finally:
+        await s.close()
+
+
+async def test_disconnected_only_waiter_cancels_loading():
+    cfg, life = config(), FakeLifecycle()
+
+    async def slow(model):
+        life.owner = model.id
+        await asyncio.sleep(2)
+
+    life.activate = slow
+    s = Scheduler(cfg, life)
+    await s.start()
+    try:
+        j = s.enqueue(cfg.models["text"], "alice", 20, result)
+        await until(lambda: life.owner == "text")
+        s.cancel(j)
+        await until(lambda: s.current is None)
+        assert life.owner is None
+    finally:
+        await s.close()
+
+
+async def test_recovery_stops_all_workers_before_global_memory_check(monkeypatch):
+    from avifors import lifecycle
+
+    cfg = config()
+    cfg.release_check = ["check"]
+    for m in cfg.models.values():
+        m.stop = ["stop", m.id]
+    owners = {"image"}
+    calls = []
+
+    async def command(argv, timeout):
+        calls.append(argv)
+        if argv[0] == "stop":
+            owners.discard(argv[1])
+        else:
+            assert not owners
+
+    monkeypatch.setattr(lifecycle, "execute", command)
+    driver = lifecycle.Lifecycle(cfg, None)
+    await driver.recover()
+    assert calls[-1] == ["check"]
+    assert calls.count(["check"]) == 1

@@ -194,6 +194,33 @@ class Scheduler:
             self.counts["releases"] += 1
         self.state = "unloaded"
 
+    def expire_pending(self):
+        now = time.monotonic()
+        for job in list(self.pending):
+            if job.cancelled or now >= job.expires:
+                self.pending.remove(job)
+                if not job.future.done():
+                    job.future.set_exception(Rejected(504, "queue deadline exceeded"))
+                self.counts["queue_expired"] += 1
+
+    async def activate(self, model):
+        task = asyncio.create_task(self.lifecycle.activate(model))
+        try:
+            while not task.done():
+                self.expire_pending()
+                if not any(j.model == model.id for j in self.pending):
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
+                    await self.release(hard=True)
+                    return False
+                await asyncio.wait({task}, timeout=0.025)
+            await task
+            return True
+        finally:
+            if not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+
     async def loop(self):
         try:
             while True:
@@ -203,12 +230,7 @@ class Scheduler:
                     if now >= self.fault_until[key]:
                         self.model_faults.pop(key, None)
                         self.fault_until.pop(key)
-                for job in list(self.pending):
-                    if job.cancelled or now >= job.expires:
-                        self.pending.remove(job)
-                        if not job.future.done():
-                            job.future.set_exception(Rejected(504, "queue deadline exceeded"))
-                        self.counts["queue_expired"] += 1
+                self.expire_pending()
                 if self.reset_required:
                     await self.abort("worker reset after cancellation or failure")
                     await self.release(hard=True)
@@ -258,7 +280,8 @@ class Scheduler:
                     self.epoch_started = False
                     self.preferred = None
                     try:
-                        await self.lifecycle.activate(model)
+                        if not await self.activate(model):
+                            continue
                         self.model_faults.pop(model.id, None)
                         self.counts["activations"] += 1
                         self.last_finished = time.monotonic()
