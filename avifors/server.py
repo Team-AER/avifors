@@ -258,12 +258,23 @@ async def forward(request, model, body, path, holder):
             data = await upstream.read()
             return web.Response(body=data, status=upstream.status, headers=response_headers)
         response = web.StreamResponse(status=upstream.status, headers=response_headers)
-        await response.prepare(request)
-        holder["response"] = response
+        disconnected = request.transport is None or request.transport.is_closing()
+        if not disconnected:
+            try:
+                await response.prepare(request)
+                holder["response"] = response
+            except ConnectionError:
+                disconnected = True
         async for data in upstream.content.iter_any():
-            await response.write(data)
-        await response.write_eof()
-        return response
+            if not disconnected:
+                try:
+                    await response.write(data)
+                except ConnectionError:
+                    disconnected = True
+        if not disconnected:
+            with contextlib.suppress(ConnectionError):
+                await response.write_eof()
+        return response if response.prepared else web.Response(status=upstream.status)
 
 
 async def infer(request):

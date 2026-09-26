@@ -2,7 +2,7 @@ import asyncio
 import base64
 
 from aiohttp import web
-from test_scheduler import FakeLifecycle, config
+from test_scheduler import FakeLifecycle, config, until
 
 from avifors.config import User
 from avifors.server import create_app
@@ -135,3 +135,40 @@ async def test_stream_deadline_emits_error_not_success(aiohttp_client, aiohttp_s
     text = await r.text()
     assert '"error"' in text
     assert "[DONE]" not in text
+
+
+async def test_disconnected_stream_drains_and_preserves_other_user(aiohttp_client, aiohttp_server, tmp_path):
+    drained = asyncio.Event()
+
+    async def worker(request):
+        body = await request.json()
+        if not body.get("stream"):
+            await asyncio.sleep(0.08)
+            return web.json_response({"ok": True})
+        response = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
+        await response.prepare(request)
+        await response.write(b"data: first\n\n")
+        await asyncio.sleep(0.12)
+        await response.write(b"data: [DONE]\n\n")
+        drained.set()
+        return response
+
+    upstream = web.Application()
+    upstream.router.add_post("/v1/chat/completions", worker)
+    server = await aiohttp_server(upstream)
+    life = FakeLifecycle()
+    client = await aiohttp_client(create_app(configured(tmp_path, server.make_url("/")), life))
+    response = await client.post("/v1/chat/completions", json={"model": "text", "stream": True}, headers=AUTH)
+    await response.content.readuntil(b"\n\n")
+    peer = asyncio.ensure_future(
+        client.post(
+            "/v1/chat/completions",
+            json={"model": "text"},
+            headers={"Authorization": "Bearer test-key-bob-long"},
+        )
+    )
+    response.close()
+    assert await (await peer).json() == {"ok": True}
+    await until(drained.is_set)
+    await until(lambda: life.owner is None)
+    assert ("stop", "text", True) not in life.events

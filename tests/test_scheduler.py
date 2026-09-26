@@ -155,7 +155,25 @@ async def test_queue_limits_are_per_user_and_global():
     assert not s.pending
 
 
-async def test_cancelled_active_worker_releases_gpu():
+async def test_cancelled_active_request_drains_without_interrupting_peer():
+    cfg, life = config(), FakeLifecycle()
+    s = Scheduler(cfg, life)
+    await s.start()
+    try:
+        a = s.enqueue(cfg.models["text"], "alice", 20, lambda: result(0.08))
+        b = s.enqueue(cfg.models["text"], "bob", 20, lambda: result(0.1))
+        await until(lambda: len(s.active) == 2)
+        s.cancel(a)
+        with pytest.raises(asyncio.CancelledError):
+            await a.future
+        assert await b.future == "ok"
+        await until(lambda: s.current is None)
+        assert ("stop", "text", True) not in life.events
+    finally:
+        await s.close()
+
+
+async def test_abandoned_request_still_has_hard_execution_deadline():
     cfg, life = config(), FakeLifecycle()
     s = Scheduler(cfg, life)
     await s.start()
@@ -163,9 +181,8 @@ async def test_cancelled_active_worker_releases_gpu():
         a = s.enqueue(cfg.models["text"], "alice", 20, lambda: result(5))
         await until(lambda: bool(s.active))
         s.cancel(a)
-        with pytest.raises(Rejected):
-            await a.future
         await until(lambda: s.current is None)
+        assert s.counts["timeouts"] == 1
         assert ("stop", "text", True) in life.events
     finally:
         await s.close()

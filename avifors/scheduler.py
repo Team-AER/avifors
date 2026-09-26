@@ -104,13 +104,17 @@ class Scheduler:
         return job
 
     def cancel(self, job):
+        if job.cancelled:
+            return
         job.cancelled = True
         if job in self.pending:
             self.pending.remove(job)
             job.future.cancel()
         elif job in self.active:
-            # A disconnected HTTP client is not proof that CUDA work stopped.
-            self.reset_required = True
+            # Drain abandoned work within its original deadline. Resetting a
+            # shared worker here lets one short client timeout kill other users.
+            job.future.cancel()
+            self.counts["client_cancelled"] += 1
         self.events.set()
 
     def choose(self):

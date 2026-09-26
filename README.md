@@ -68,10 +68,12 @@ only the remaining budget. No active request extends a lease. When no competing 
 waits, an idle epoch can renew without physically reloading the same worker. Model
 sleeping and idle residency do not mean outstanding generation can run indefinitely.
 
-After an executing request disconnects, times out or fails, the broker resets the
-worker to prove work stopped. **Other active requests on that worker may also fail.**
-This conservative first release provides bounded GPU ownership without assuming that
-closing a socket aborts CUDA. There is no transparent replay or mid-generation resume.
+A queued client disconnect removes its request. An executing client disconnect
+abandons delivery but drains the upstream response within the original deadline;
+it does not reset other users' work. This may spend compute on an abandoned request.
+At an execution deadline or worker failure, the broker resets the worker to prove
+work stopped. **Other active requests on that worker may then fail.** There is no
+transparent replay or mid-generation resume.
 A streamed timeout produces an error event, never a successful fabricated finish.
 A hung driver can exceed cleanup time; release failures disable admission rather than
 starting a second owner. Pending requests are volatile and fail on broker restart.
