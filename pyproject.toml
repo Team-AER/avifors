@@ -1,0 +1,28 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "avifors"
+version = "0.1.0"
+description = "Demand-loaded GPU inference with bounded leases and multi-user scheduling"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+authors = [{name = "Team AER"}]
+dependencies = ["aiohttp>=3.12.15,<4", "PyYAML>=6.0.2,<7"]
+
+[project.optional-dependencies]
+test = ["pytest>=8,<10", "pytest-asyncio>=1,<2", "pytest-aiohttp>=1,<2", "ruff>=0.12,<1"]
+
+[project.scripts]
+avifors = "avifors.server:main"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 110
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "UP"]

@@ -1,0 +1,23 @@
+[Unit]
+Description=Avifors GPU inference scheduler
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=avifors
+Group=avifors
+EnvironmentFile=/etc/avifors/secrets.env
+ExecStart=/opt/avifors/.venv/bin/avifors --config /etc/avifors/config.yaml
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=60
+WorkingDirectory=/opt/avifors
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/avifors
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

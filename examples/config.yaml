@@ -1,0 +1,45 @@
+server:
+  host: 127.0.0.1
+  port: 8000
+  policy: latency # latency | fifo | fair | throughput
+  max_pending: 64
+  admin_key_env: AVIFORS_ADMIN_KEY
+  store: ./local/images
+  public_base: http://localhost:8000/generated
+  drain_margin: 15
+users:
+  - name: example-user
+    key_env: AVIFORS_USER_KEY
+    models: ["*"]
+    max_pending: 8
+defaults:
+  idle_timeout: 300
+  max_hold: 300
+  max_runtime: 300
+  queue_timeout: 300
+  activation_timeout: 180
+  release_timeout: 15
+models:
+  - id: your-text-model
+    upstream: http://127.0.0.1:18000
+    start: [sudo, /usr/local/sbin/avifors-worker, start, text]
+    stop: [sudo, /usr/local/sbin/avifors-worker, stop, text]
+    verify_stopped: [sudo, /usr/local/sbin/avifors-worker, verify, text]
+    concurrency: 4
+    parameters: {route: text}
+  - id: your-image-model
+    kind: sdapi
+    upstream: http://127.0.0.1:1234
+    health_path: /v1/models
+    paths: [/v1/images/generations]
+    start: [sudo, /usr/local/sbin/avifors-worker, start, image]
+    stop: [sudo, /usr/local/sbin/avifors-worker, stop, image]
+    verify_stopped: [sudo, /usr/local/sbin/avifors-worker, verify, image]
+    concurrency: 1
+    parameters:
+      route: image
+      default_size: 640x640
+      steps: 28
+      cfg_scale: 7
+      sampler_name: dpm++2m
+      scheduler: karras
