@@ -282,3 +282,36 @@ async def test_recovery_stops_all_workers_before_global_memory_check(monkeypatch
     await driver.recover()
     assert calls[-1] == ["check"]
     assert calls.count(["check"]) == 1
+
+
+@pytest.mark.parametrize(
+    "policy,expected",
+    [
+        ("latency", ["t1", "image", "t2"]),
+        ("fifo", ["t1", "t2", "image"]),
+        ("throughput", ["t1", "t2", "image"]),
+    ],
+)
+async def test_policy_controls_replenishment_after_active_job(policy, expected):
+    cfg, life = config(policy), FakeLifecycle()
+    cfg.models["text"].concurrency = 1
+    s, gate, order = Scheduler(cfg, life), asyncio.Event(), []
+
+    async def first():
+        order.append("t1")
+        await gate.wait()
+
+    async def run(name):
+        order.append(name)
+
+    await s.start()
+    try:
+        a = s.enqueue(cfg.models["text"], "alice", 20, first)
+        await until(lambda: bool(s.active))
+        b = s.enqueue(cfg.models["text"], "alice", 20, lambda: run("t2"))
+        c = s.enqueue(cfg.models["image"], "bob", 20, lambda: run("image"))
+        gate.set()
+        await asyncio.gather(a.future, b.future, c.future)
+        assert order == expected
+    finally:
+        await s.close()

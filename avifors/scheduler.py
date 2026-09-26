@@ -255,13 +255,17 @@ class Scheduler:
                             self.service[self.current.id] += elapsed
                             self.epoch = now
                     if self.current and not self.active:
-                        if (
-                            competitors
-                            and (
-                                self.epoch_started
-                                or not any(j.model == self.current.id for j in self.pending)
+                        matching = any(j.model == self.current.id for j in self.pending)
+                        switch = competitors and (self.epoch_started or not matching)
+                        if self.cfg.policy == "fifo":
+                            switch = competitors and self.pending[0].model != self.current.id
+                        elif self.cfg.policy == "throughput":
+                            switch = competitors and (
+                                not matching or elapsed >= self.current.max_hold - self.cfg.drain_margin
                             )
-                        ) or (not self.pending and now - self.last_finished >= self.current.idle_timeout):
+                        if switch or (
+                            not self.pending and now - self.last_finished >= self.current.idle_timeout
+                        ):
                             await self.release()
                     if self.current:
                         drain = (
