@@ -126,6 +126,19 @@ async def metrics(request):
         output += [f"# TYPE avifors_{key} gauge", f"avifors_{key} {value}"]
     for key, value in s["counters"].items():
         output += [f"# TYPE avifors_{key}_total counter", f"avifors_{key}_total {value}"]
+    image_models = [m.id for m in request.app["config"].models.values() if m.kind == "sdapi"]
+    if image_models:
+        totals = {
+            k: sum(s["model_stats"].get(m, {}).get(k, 0) for m in image_models)
+            for k in ("requests", "failures", "busy", "last_duration_seconds")
+        }
+        output += [
+            "imagegen_api_up 1",
+            f"imagegen_generation_active {int(s['resident'] in image_models and s['active'] > 0)}",
+        ]
+        for k, value in totals.items():
+            suffix = "" if k.endswith("seconds") else "_total"
+            output.append(f"imagegen_{k}{suffix} {value}")
     for m in request.app["config"].models.values():
         if m.kind == "openai":
             try:

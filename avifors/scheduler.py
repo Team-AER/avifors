@@ -49,6 +49,7 @@ class Scheduler:
         self.fault_until = {}
         self.events = asyncio.Event()
         self.counts = Counter()
+        self.model_stats = defaultdict(Counter)
         self.service = defaultdict(float)
         self.user_service = defaultdict(float)
         self.sequence = itertools.count()
@@ -86,6 +87,7 @@ class Scheduler:
             or sum(j.user == user for j in all_jobs) >= limit
         ):
             self.counts["rejected"] += 1
+            self.model_stats[model.id]["busy"] += 1
             raise Rejected(429, "inference queue is full")
         now = time.monotonic()
         job = Job(
@@ -152,9 +154,11 @@ class Scheduler:
             if not job.future.done():
                 job.future.set_result(result)
             self.counts["completed"] += 1
+            self.model_stats[job.model]["requests"] += 1
         except TimeoutError:
             self.reset_required = True
             self.counts["timeouts"] += 1
+            self.model_stats[job.model]["failures"] += 1
             if not job.future.done():
                 job.future.set_exception(Rejected(504, "GPU execution deadline exceeded"))
         except asyncio.CancelledError:
@@ -164,11 +168,13 @@ class Scheduler:
         except Exception as exc:
             self.reset_required = True
             self.counts["failed"] += 1
+            self.model_stats[job.model]["failures"] += 1
             if not job.future.done():
                 job.future.set_exception(exc)
         finally:
             elapsed = time.monotonic() - job.started
             self.user_service[job.user] += elapsed
+            self.model_stats[job.model]["last_duration_seconds"] = elapsed
             self.active.pop(job, None)
             self.last_finished = time.monotonic()
             self.events.set()
@@ -293,7 +299,8 @@ class Scheduler:
                         await self.release(hard=True)
                     continue
                 try:
-                    await asyncio.wait_for(self.events.wait(), 0.05)
+                    async with asyncio.timeout(0.05):
+                        await self.events.wait()
                 except TimeoutError:
                     pass
         except asyncio.CancelledError:
@@ -321,4 +328,5 @@ class Scheduler:
             "fault": self.fault,
             "model_faults": self.model_faults,
             "counters": dict(self.counts),
+            "model_stats": {k: dict(v) for k, v in self.model_stats.items()},
         }
