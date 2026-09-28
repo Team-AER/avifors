@@ -1,0 +1,9 @@
+# Use only fully downloaded, checksum-verified files. Never download during a lease.
+name: avifors_omni_3b_v2
+base: omniASR_LLM_3B_v2
+checkpoint: file:///var/lib/avifors/stt-models/omniASR-LLM-3B-v2.pt
+tokenizer_ref: avifors_omni_tokenizer_v2
+---
+name: avifors_omni_tokenizer_v2
+base: omniASR_tokenizer_written_v2
+tokenizer: file:///var/lib/avifors/stt-models/omniASR_tokenizer_written_v2.model

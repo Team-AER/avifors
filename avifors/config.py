@@ -55,8 +55,8 @@ class Model:
         command(self.stop)
         if self.verify_stopped:
             command(self.verify_stopped)
-        if self.kind not in {"openai", "sdapi"}:
-            raise ValueError("kind must be openai or sdapi")
+        if self.kind not in {"openai", "sdapi", "stt"}:
+            raise ValueError("kind must be openai, sdapi or stt")
         if not self.id or self.concurrency < 1 or self.max_pending < 1:
             raise ValueError("invalid model ID or queue/concurrency limit")
         for key in (
@@ -99,6 +99,7 @@ class Config:
     drain_margin: float = 15
     release_check: list[str] | None = None
     otlp_endpoint: str = ""
+    audio: dict = field(default_factory=dict)
 
 
 def load(path):

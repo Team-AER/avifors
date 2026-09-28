@@ -332,3 +332,19 @@ async def test_policy_controls_replenishment_after_active_job(policy, expected):
         assert order == expected
     finally:
         await s.close()
+
+
+async def test_checkpointed_work_requests_fresh_budget_before_start():
+    cfg, life = config(), FakeLifecycle()
+    s = Scheduler(cfg, life)
+    await s.start()
+    try:
+        first = s.enqueue(cfg.models["text"], "alice", 10, lambda: result(0.25))
+        await first.future
+        # Only ~150ms remains; this chunk needs 250ms and must get a new epoch.
+        second = s.enqueue(cfg.models["text"], "alice", 10, lambda: result(0.20), min_budget=0.25)
+        assert await second.future == "ok"
+        assert len([e for e in life.events if e == ("start", "text")]) == 2
+        assert s.counts["timeouts"] == 0
+    finally:
+        await s.close()

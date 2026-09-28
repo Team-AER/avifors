@@ -1,0 +1,8 @@
+# Isolated from the text worker. Generate requirements.lock after installation.
+omnilingual-asr @ git+https://github.com/facebookresearch/omnilingual-asr.git@81f51e224ce9e74b02cc2a3eaf21b2d91d743455
+aiohttp==3.14.3
+soundfile==0.14.0
+pycountry==26.2.16
+# fairseq2n 0.6 links against torch 2.8; match its audio extension ABI.
+torch==2.8.0
+torchaudio==2.8.0

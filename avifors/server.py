@@ -18,6 +18,7 @@ from email.parser import BytesParser
 import aiohttp
 from aiohttp import web
 
+from .audio import AudioJobs, inspect_job, list_jobs, submit
 from .config import load
 from .lifecycle import Lifecycle
 from .scheduler import Rejected, Scheduler
@@ -150,6 +151,12 @@ async def metrics(request):
             except (aiohttp.ClientError, TimeoutError):
                 pass
     output.append(f"avifors_trace_dropped_total {request.app['telemetry'].dropped}")
+    if "audio" in request.app:
+        audio = request.app["audio"]
+        for row in audio.db.execute("SELECT state, COUNT(*) FROM jobs GROUP BY state"):
+            output.append(f'avifors_audio_jobs{{state="{row[0]}"}} {row[1]}')
+        reserved = audio.db.execute("SELECT COALESCE(SUM(reserved),0) FROM jobs").fetchone()[0]
+        output.append(f"avifors_audio_reserved_bytes {reserved}")
     return web.Response(text="\n".join(output) + "\n", content_type="text/plain")
 
 
@@ -383,6 +390,9 @@ async def context(app):
         lifecycle = app.get("lifecycle") or Lifecycle(cfg, http)
         app["scheduler"] = Scheduler(cfg, lifecycle)
         await app["scheduler"].start()
+        if any(m.kind == "stt" for m in cfg.models.values()):
+            app["audio"] = AudioJobs(app)
+            await app["audio"].start()
         app["telemetry"].start()
         pruner = asyncio.create_task(prune(app))
         try:
@@ -391,6 +401,8 @@ async def context(app):
             pruner.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await pruner
+            if "audio" in app:
+                await app["audio"].close()
             await app["scheduler"].close()
             await app["telemetry"].close()
 
@@ -409,6 +421,14 @@ def create_app(cfg, lifecycle=None):
             web.get("/v1/models", models),
             web.get("/backend/{backend}/v1/models", models),
             web.get("/generated/{name}", artifact),
+            web.post("/v1/audio/transcriptions", submit),
+            web.post("/v1/audio/transcriptions/jobs", submit),
+            web.get("/v1/audio/transcriptions/jobs", list_jobs),
+            web.get("/v1/audio/transcriptions/jobs/{job}", inspect_job),
+            web.delete("/v1/audio/transcriptions/jobs/{job}", inspect_job),
+            web.get("/v1/audio/transcriptions/jobs/{job}/result", inspect_job),
+            web.post("/v1/audio/transcriptions/jobs/{job}/retry", inspect_job),
+            web.post("/backend/{backend}/v1/audio/transcriptions", submit),
             web.post("/v1/{tail:.*}", infer),
             web.post("/backend/{backend}/v1/{tail:.*}", infer),
         ]

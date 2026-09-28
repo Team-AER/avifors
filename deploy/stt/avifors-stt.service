@@ -1,0 +1,23 @@
+[Unit]
+Description=Avifors on-demand multilingual speech worker
+After=network-online.target
+
+[Service]
+Type=simple
+User=avifors
+Group=avifors
+WorkingDirectory=/opt/avifors
+Environment=HOME=/var/lib/avifors
+Environment=FAIRSEQ2_ASSET_DIR=/etc/avifors/stt-assets
+Environment=FAIRSEQ2_CACHE_DIR=/var/lib/avifors/fairseq2
+Environment=OMP_NUM_THREADS=6
+ExecStart=/opt/avifors-stt-venv/bin/python -m avifors.stt_worker --model avifors_omni_3b_v2
+Restart=no
+TimeoutStopSec=10
+KillMode=control-group
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/avifors
+UMask=0077
+# No Install section: the broker alone owns lifecycle and boot decisions.

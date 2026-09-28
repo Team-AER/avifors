@@ -30,6 +30,7 @@ class Job:
     task: asyncio.Task | None = None
     cancelled: bool = False
     started: float = 0
+    min_budget: float = 0
 
 
 class Scheduler:
@@ -77,7 +78,7 @@ class Scheduler:
                 if not j.future.done():
                     j.future.set_exception(Rejected(status, message))
 
-    def enqueue(self, model, user, limit, call):
+    def enqueue(self, model, user, limit, call, *, min_budget=0):
         if self.fault or self.closing:
             raise Rejected(503, "GPU supervisor unavailable")
         all_jobs = self.pending + list(self.active)
@@ -99,6 +100,9 @@ class Scheduler:
             call,
             asyncio.get_running_loop().create_future(),
         )
+        if not 0 <= min_budget < model.max_hold:
+            raise ValueError("minimum execution budget must fit the model lease")
+        job.min_budget = min_budget
         self.pending.append(job)
         self.events.set()
         return job
@@ -284,6 +288,12 @@ class Scheduler:
                         while not drain and len(self.active) < self.current.concurrency:
                             job = self.next_job()
                             if not job:
+                                break
+                            # Checkpointed audio can wait for a fresh lease rather
+                            # than repeatedly losing a chunk at the epoch boundary.
+                            if self.epoch + self.current.max_hold - time.monotonic() < job.min_budget:
+                                if not self.active:
+                                    await self.release()
                                 break
                             self.pending.remove(job)
                             self.epoch_started = True

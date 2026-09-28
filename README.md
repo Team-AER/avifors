@@ -137,3 +137,11 @@ GPU release and sleep compatibility must also be tested on the target hardware.
 MIT covers Avifors code only. Inference engines, model weights and vendor dependencies
 retain their own licenses. No weights, private configurations or credentials are
 included in this repository.
+
+## Speech transcription
+
+Optional multilingual speech workers share the same GPU scheduler. Durable audio
+jobs accept multi-hour recordings, checkpoint progress, survive restarts, and
+provide polling, cancellation and transcript/subtitle downloads through the
+proxy. See [STT.md](STT.md) for the API, limits, retention, model/runtime setup and
+quality limitations. The text and image runtime settings are independent.

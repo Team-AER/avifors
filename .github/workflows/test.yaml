@@ -15,5 +15,6 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - run: pip install '.[test]'
+      - run: sudo apt-get update -qq && sudo apt-get install -y ffmpeg
       - run: python -m pytest -q
       - run: ruff check avifors tests

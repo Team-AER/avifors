@@ -1,0 +1,31 @@
+# Merge into an existing Avifors configuration; supply your own auth/network policy.
+server:
+  audio:
+    store: /var/lib/avifors/audio
+    max_duration_seconds: 28800
+    max_upload_bytes: 2147483648
+    max_storage_bytes: 21474836480
+    retention_seconds: 172800
+models:
+  - id: aer-stt-v1
+    kind: stt
+    upstream: http://127.0.0.1:18002
+    health_path: /health
+    paths: [/v1/audio/transcriptions]
+    start: [sudo, /usr/local/sbin/avifors-worker, start, stt]
+    stop: [sudo, /usr/local/sbin/avifors-worker, stop, stt]
+    verify_stopped: [sudo, /usr/local/sbin/avifors-worker, verify, stt]
+    concurrency: 1
+    max_pending: 4
+    idle_timeout: 300
+    max_hold: 300
+    max_runtime: 300
+    activation_timeout: 240
+    release_timeout: 20
+    queue_timeout: 480
+    parameters:
+      route: stt
+    metadata:
+      capabilities: [transcription, multilingual, async_jobs, long_audio]
+      max_audio_duration_seconds: 28800
+      timestamp_granularity: chunk
