@@ -62,8 +62,10 @@ upstream 7B quality claims must not be attributed to the 3B checkpoint.
 CPU decoding produces 16 kHz mono PCM on disk. A bounded-window scan chooses low
 energy boundaries between 20 and 30 seconds. Forced cuts retain 0.8 seconds of
 overlap; exact matching suffix/prefix text is deduplicated without LLM rewriting.
-Only digital silence is skipped; quiet speech is not discarded. Audio context
-is local to each chunk, so proper-name consistency and uninterrupted speech at
+With the optional CPU Silero ONNX model configured, detected speech is padded
+by 250 ms and non-speech is excluded before GPU admission. Thresholds are
+configurable for quiet recordings. Without VAD only digital silence is skipped.
+Audio context is local to each chunk, so proper-name consistency and uninterrupted speech at
 forced boundaries should be evaluated for the target recordings.
 
 Every chunk is an ordinary scheduled GPU job. Audio never bypasses model/user
@@ -104,6 +106,10 @@ Configure under `server.audio` (all numbers are positive):
 | overlap_seconds | 0.8 |
 | min_execution_budget | 60 seconds |
 | chunk_retries | 3 |
+| vad_threshold / vad_padding | 0.5 / 0.25 seconds |
+
+`vad_model` optionally names a local Silero ONNX model; CPUExecutionProvider is
+explicitly selected so preparation never competes for GPU ownership.
 
 `store` defaults to an `audio` sibling of the image store. Admission reserves
 worst-case upload plus decoded PCM space before reading a body. After preparation
@@ -123,10 +129,19 @@ main database while WAL writes are active. LXC backups cover the store on Atlas.
 
 ## Worker installation
 
-Install FFmpeg for the broker. Install the speech runtime in a **separate venv**
+Install FFmpeg and `avifors[audio]` for the broker when using CPU VAD. Install the speech runtime in a **separate venv**
 using `deploy/stt/requirements.lock` (or the pinned input manifest when developing).
 Ubuntu build dependencies include Python development headers, CMake, a C++
 compiler, libsndfile, zlib, libbz2, liblzma and Eigen headers.
+
+Create the writable stores before restarting the broker:
+
+```sh
+install -d -m 700 -o avifors -g avifors /var/lib/avifors/audio
+install -d -m 750 -o avifors -g avifors /var/lib/avifors/fairseq2
+```
+
+The supplied runtime lock targets Linux x86-64, Python 3.12 and CUDA 12.8.
 
 Install `deploy/stt/avifors-stt.service`, extend the root-owned fixed worker helper
 and sudo allowlist with `start/stop/verify stt`, and add the model configuration
@@ -153,3 +168,51 @@ must additionally test real model output, GPU memory/load time, mixed workload
 handoffs, multi-hour media through the proxy, job recovery after restart and
 existing text/image regressions. A synthetic long-file test demonstrates duration
 and recovery, not an accuracy benchmark on hours of natural conversation.
+
+## Engine selection
+
+`aer-stt-v1` is the stable broad multilingual entry point. The example deployment
+uses Meta Omnilingual 3B v2 for unknown languages and broad coverage, and routes
+explicit English hints (`en`, `eng`, `eng_Latn`) to Qwen3-ASR-1.7B for punctuation
+and casing. `aer-stt-qwen3` also exposes Qwen directly for its supported languages.
+Both run BF16, one GPU owner at a time, with separate on-demand worker processes.
+
+`parameters.language_models` is an administrator-controlled mapping from exact
+language hints to configured STT model IDs. It is optional. The resolved engine
+is saved at submission and reported as `engine_model`; changing configuration
+does not change the engine midway through an existing recording. A user allowed
+to use the public alias may use its configured engines through that alias, without
+being granted direct access to every engine model ID.
+
+The six-sample deployment smoke set is not a general accuracy benchmark. Both
+engines matched the three English references after case/punctuation and “Mr.”
+normalization. Hindi results were mixed, so the broad default was retained rather
+than claiming a universal quality winner. Proper nouns and difficult recordings
+still need review.
+
+Pinned upstream artifacts:
+
+- Meta model/runtime: [Omnilingual ASR](https://github.com/facebookresearch/omnilingual-asr),
+  runtime revision `81f51e224ce9e74b02cc2a3eaf21b2d91d743455` (Apache-2.0).
+- Qwen: [Qwen3-ASR-1.7B](https://huggingface.co/Qwen/Qwen3-ASR-1.7B),
+  model revision `7278e1e70fe206f11671096ffdd38061171dd6e5` (Apache-2.0),
+  `qwen-asr==0.0.6`, Transformers 4.57.6.
+- CPU VAD: [Silero](https://github.com/snakers4/silero-vad),
+  `src/silero_vad/data/silero_vad.onnx` at revision
+  `5cd7945676eb32225748052e2e6a0580e4686a08` (MIT).
+
+Download model files separately from their upstreams, keep their licenses, and
+verify the checksums in `deploy/stt/SHA256SUMS`. Qwen's snapshot belongs at
+`/var/lib/avifors/stt-models/qwen3-asr-1.7b`. Install both STT service units and
+allowlisted helpers if using the example language routing. Neither unit starts
+independently at boot. The text vLLM environment remains separate from all of
+these dependencies.
+
+For proxy administration, `server.audio.admission_catalog_url` can point to a
+trusted catalog with a `models` array of `{id, status}` records. Only `ready` or
+`degraded` model IDs admit work; both the public alias and its resolved engine
+must be enabled. Avifors refreshes this control plane every five
+seconds: disabled/missing models reject new uploads and pause existing jobs at
+chunk boundaries, preserving their checkpoints until re-enabled. Catalog outages
+also pause jobs; the overall job deadline still applies. The deployment connects
+this to the proxy's existing model enable/disable and quarantine controls.

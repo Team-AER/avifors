@@ -1,0 +1,25 @@
+[Unit]
+Description=Avifors on-demand Qwen multilingual speech worker
+After=network-online.target
+
+[Service]
+Type=simple
+User=avifors
+Group=avifors
+WorkingDirectory=/opt/avifors
+Environment=HOME=/var/lib/avifors
+Environment=FAIRSEQ2_ASSET_DIR=/etc/avifors/stt-assets
+Environment=FAIRSEQ2_CACHE_DIR=/var/lib/avifors/fairseq2
+Environment=OMP_NUM_THREADS=6
+Environment=HF_HUB_OFFLINE=1
+Environment=TRANSFORMERS_OFFLINE=1
+ExecStart=/opt/avifors-stt-venv/bin/python -m avifors.stt_worker --engine qwen --port 18003 --model /var/lib/avifors/stt-models/qwen3-asr-1.7b
+Restart=no
+TimeoutStopSec=10
+KillMode=control-group
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/avifors
+UMask=0077
+# No Install section: the broker alone owns lifecycle and boot decisions.

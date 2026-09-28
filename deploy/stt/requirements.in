@@ -6,3 +6,5 @@ pycountry==26.2.16
 # fairseq2n 0.6 links against torch 2.8; match its audio extension ABI.
 torch==2.8.0
 torchaudio==2.8.0
+qwen-asr==0.0.6
+torchvision==0.23.0

@@ -3,7 +3,8 @@
 import subprocess
 import sys
 
-UNITS = {"text": "avifors-text.service", "image": "avifors-image.service", "stt": "avifors-stt.service"}
+UNITS = {"text": "avifors-text.service", "image": "avifors-image.service", "stt": "avifors-stt.service",
+         "stt-qwen": "avifors-stt-qwen.service"}
 if len(sys.argv) != 3 or sys.argv[1] not in {"start", "stop", "verify"} or sys.argv[2] not in UNITS:
     raise SystemExit(2)
 action, unit = sys.argv[1], UNITS[sys.argv[2]]

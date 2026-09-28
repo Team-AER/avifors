@@ -13,6 +13,7 @@ authors = [{name = "Team AER"}]
 dependencies = ["aiohttp>=3.12.15,<4", "PyYAML>=6.0.2,<7"]
 
 [project.optional-dependencies]
+audio = ["numpy>=1.26,<3", "onnxruntime>=1.20,<2"]
 test = ["pytest>=8,<10", "pytest-asyncio>=1,<2", "pytest-aiohttp>=1,<2", "ruff>=0.12,<1"]
 
 [project.scripts]

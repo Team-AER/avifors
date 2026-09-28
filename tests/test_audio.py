@@ -295,3 +295,76 @@ async def test_cancel_upload_cannot_resurrect_job(aiohttp_client, aiohttp_server
     assert (await task).status == 409
     assert client.app["audio"].row(jid)["state"] == "cancelled"
     assert not life.events
+
+
+def test_vad_preserves_timeline_and_trims_non_speech():
+    from avifors.vad import apply_regions, speech_regions
+
+    regions = speech_regions([0.0] * 10 + [0.9] * 30 + [0.0] * 100, duration=4.48)
+    assert regions == [(pytest.approx(0.07), pytest.approx(1.53))]
+    plan = [{"start": 0, "end": 2, "silent": False}, {"start": 2, "end": 4.48, "silent": False}]
+    apply_regions(plan, regions)
+    assert plan[0]["infer_start"] == pytest.approx(0.07)
+    assert plan[0]["infer_end"] == pytest.approx(1.53)
+    assert plan[1]["silent"] and plan[1]["end"] == 4.48
+
+
+async def test_language_engine_selection_is_persisted(aiohttp_client, aiohttp_server, tmp_path):
+    import copy
+
+    client, life, cfg = await service(aiohttp_client, aiohttp_server, tmp_path)
+    other = copy.deepcopy(cfg.models["speech"])
+    other.id = "alternate"
+    cfg.models["alternate"] = other
+    cfg.models["speech"].parameters["language_models"] = {"hi": "alternate"}
+    cfg.users[0].models = ["speech"]
+    r = await client.post("/v1/audio/transcriptions/jobs", data=form(language="hi"), headers=AUTH)
+    job = await r.json()
+    assert job["model"] == "speech" and job["engine_model"] == "alternate"
+    await wait_job(client, job["id"])
+    assert ("start", "alternate") in life.events
+    # Caller cannot directly grant themselves an arbitrary backend.
+    r = await client.post("/v1/audio/transcriptions/jobs", data=form(engine_model="alternate"), headers=AUTH)
+    assert r.status == 400
+
+
+async def test_proxy_catalog_controls_admission(aiohttp_client, aiohttp_server, tmp_path):
+    state = {"status": "disabled"}
+
+    async def catalog(request):
+        return web.json_response({"models": [{"id": "speech", "status": state["status"]}]})
+
+    app = web.Application()
+    app.router.add_get("/catalog", catalog)
+    catalog_server = await aiohttp_server(app)
+    client, life, cfg = await service(aiohttp_client, aiohttp_server, tmp_path)
+    manager = client.app["audio"]
+    manager.catalog_url = str(catalog_server.make_url("/catalog"))
+    r = await client.post("/v1/audio/transcriptions/jobs", data=form(), headers=AUTH)
+    assert r.status == 503 and not life.events
+    state["status"] = "ready"
+    manager.catalog_at = 0
+    r = await client.post("/v1/audio/transcriptions/jobs", data=form(), headers=AUTH)
+    assert r.status == 202
+    await wait_job(client, (await r.json())["id"])
+
+
+async def test_proxy_catalog_controls_routed_engine(aiohttp_client, aiohttp_server, tmp_path):
+    import copy
+
+    async def catalog(request):
+        return web.json_response(
+            {"models": [{"id": "speech", "status": "ready"}, {"id": "alternate", "status": "disabled"}]}
+        )
+
+    app = web.Application()
+    app.router.add_get("/catalog", catalog)
+    server = await aiohttp_server(app)
+    client, life, cfg = await service(aiohttp_client, aiohttp_server, tmp_path)
+    other = copy.deepcopy(cfg.models["speech"])
+    other.id = "alternate"
+    cfg.models["alternate"] = other
+    cfg.models["speech"].parameters["language_models"] = {"en": "alternate"}
+    client.app["audio"].catalog_url = str(server.make_url("/catalog"))
+    response = await client.post("/v1/audio/transcriptions/jobs", data=form(language="en"), headers=AUTH)
+    assert response.status == 503 and not life.events

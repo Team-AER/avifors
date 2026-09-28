@@ -1,4 +1,4 @@
-# Merge into an existing Avifors configuration; supply your own auth/network policy.
+# Example: merge models and audio settings into your authenticated broker config.
 server:
   audio:
     store: /var/lib/avifors/audio
@@ -6,26 +6,79 @@ server:
     max_upload_bytes: 2147483648
     max_storage_bytes: 21474836480
     retention_seconds: 172800
+    vad_model: /var/lib/avifors/stt-models/silero_vad.onnx
 models:
-  - id: aer-stt-v1
-    kind: stt
-    upstream: http://127.0.0.1:18002
-    health_path: /health
-    paths: [/v1/audio/transcriptions]
-    start: [sudo, /usr/local/sbin/avifors-worker, start, stt]
-    stop: [sudo, /usr/local/sbin/avifors-worker, stop, stt]
-    verify_stopped: [sudo, /usr/local/sbin/avifors-worker, verify, stt]
-    concurrency: 1
-    max_pending: 4
-    idle_timeout: 300
-    max_hold: 300
-    max_runtime: 300
-    activation_timeout: 240
-    release_timeout: 20
-    queue_timeout: 480
-    parameters:
-      route: stt
-    metadata:
-      capabilities: [transcription, multilingual, async_jobs, long_audio]
-      max_audio_duration_seconds: 28800
-      timestamp_granularity: chunk
+- id: aer-stt-v1
+  kind: stt
+  upstream: http://127.0.0.1:18002
+  health_path: /health
+  paths: &id001
+  - /v1/audio/transcriptions
+  start:
+  - sudo
+  - /usr/local/sbin/avifors-worker
+  - start
+  - stt
+  stop:
+  - sudo
+  - /usr/local/sbin/avifors-worker
+  - stop
+  - stt
+  verify_stopped:
+  - sudo
+  - /usr/local/sbin/avifors-worker
+  - verify
+  - stt
+  concurrency: 1
+  max_pending: 4
+  idle_timeout: 300
+  max_hold: 300
+  max_runtime: 300
+  activation_timeout: 240
+  release_timeout: 20
+  queue_timeout: 480
+  parameters:
+    route: stt
+    language_models:
+      en: aer-stt-qwen3
+      eng: aer-stt-qwen3
+      eng_Latn: aer-stt-qwen3
+  metadata: &id002
+    capabilities:
+    - transcription
+    - multilingual
+    - async_jobs
+    - long_audio
+    max_audio_duration_seconds: 28800
+    timestamp_granularity: chunk
+- id: aer-stt-qwen3
+  kind: stt
+  upstream: http://127.0.0.1:18003
+  health_path: /health
+  paths: *id001
+  start:
+  - sudo
+  - /usr/local/sbin/avifors-worker
+  - start
+  - stt-qwen
+  stop:
+  - sudo
+  - /usr/local/sbin/avifors-worker
+  - stop
+  - stt-qwen
+  verify_stopped:
+  - sudo
+  - /usr/local/sbin/avifors-worker
+  - verify
+  - stt-qwen
+  concurrency: 1
+  max_pending: 4
+  idle_timeout: 300
+  max_hold: 300
+  max_runtime: 300
+  activation_timeout: 240
+  release_timeout: 20
+  queue_timeout: 480
+  parameters:
+    route: stt-qwen
+  metadata: *id002

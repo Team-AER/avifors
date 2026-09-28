@@ -14,6 +14,7 @@ import secrets
 import shutil
 import signal
 import sqlite3
+import threading
 import time
 from array import array
 from pathlib import Path
@@ -43,6 +44,8 @@ DEFAULTS = {
     "overlap_seconds": 0.8,
     "min_execution_budget": 60,
     "chunk_retries": 3,
+    "vad_threshold": 0.5,
+    "vad_padding": 0.25,
 }
 
 
@@ -168,12 +171,20 @@ class AudioJobs:
         self.app = app
         raw = dict(app["config"].audio)
         self.root = Path(raw.pop("store", app["config"].store.parent / "audio"))
+        self.vad_model = raw.pop("vad_model", None)
+        self.catalog_url = raw.pop("admission_catalog_url", "")
+        self.catalog_lock = asyncio.Lock()
+        self.catalog_at, self.catalog_models = 0, set()
+        if self.vad_model and not Path(self.vad_model).is_file():
+            raise ValueError("configured VAD model file is missing")
         unknown = set(raw) - DEFAULTS.keys()
         if unknown:
             raise ValueError(f"unknown audio settings: {sorted(unknown)}")
         self.cfg = DEFAULTS | raw
         if any(not isinstance(v, (int, float)) or not math.isfinite(v) or v <= 0 for v in self.cfg.values()):
             raise ValueError("audio limits must be finite positive numbers")
+        if not 0.15 < self.cfg["vad_threshold"] <= 1:
+            raise ValueError("VAD threshold must be greater than 0.15 and at most 1")
         if not self.cfg["overlap_seconds"] < self.cfg["min_chunk_seconds"] < self.cfg["chunk_seconds"] < 40:
             raise ValueError("audio chunks must satisfy overlap < minimum < maximum < 40 seconds")
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -221,6 +232,7 @@ class AudioJobs:
             "id": row["id"],
             "object": "audio.transcription.job",
             "model": row["model"],
+            "engine_model": json.loads(row["options"]).get("engine_model", row["model"]),
             "status": row["state"],
             "created_at": row["created"],
             "duration": row["duration"],
@@ -324,13 +336,35 @@ class AudioJobs:
             directory = self.root / jid
             duration = await decode_audio(directory / "source", directory / "audio.pcm", self.cfg)
             plan = await asyncio.to_thread(plan_chunks, directory / "audio.pcm", self.cfg)
+            if self.vad_model:
+                from .vad import apply_regions, detect
+
+                stop = threading.Event()
+                detection = asyncio.create_task(
+                    asyncio.to_thread(
+                        detect,
+                        directory / "audio.pcm",
+                        self.vad_model,
+                        self.cfg["vad_threshold"],
+                        self.cfg["vad_padding"],
+                        stop,
+                    )
+                )
+                try:
+                    regions = await asyncio.shield(detection)
+                except asyncio.CancelledError:
+                    stop.set()
+                    await asyncio.gather(detection, return_exceptions=True)
+                    raise
+                plan = apply_regions(plan, regions)
             self.update(jid, duration=duration, plan=json.dumps(plan), state="queued")
             (directory / "source").unlink(missing_ok=True)
             self.update(jid, reserved=(directory / "audio.pcm").stat().st_size)
 
     async def call_chunk(self, jid, chunk, model, options):
         path = self.root / jid / "audio.pcm"
-        begin, end = round(chunk["start"] * RATE), round(chunk["end"] * RATE)
+        begin = round(chunk.get("infer_start", chunk["start"]) * RATE)
+        end = round(chunk.get("infer_end", chunk["end"]) * RATE)
         with path.open("rb") as stream:
             stream.seek(begin * 2)
             data = stream.read((end - begin) * 2)
@@ -362,7 +396,8 @@ class AudioJobs:
         try:
             await self.prepare(jid)
             row = self.row(jid)
-            model = self.app["config"].models.get(row["model"])
+            engine = json.loads(row["options"]).get("engine_model", row["model"])
+            model = self.app["config"].models.get(engine)
             if not model or model.kind != "stt":
                 raise Rejected(404, "transcription model is unavailable")
             options, plan = json.loads(row["options"]), json.loads(row["plan"])
@@ -372,6 +407,10 @@ class AudioJobs:
                     return
                 if time.time() - row["created"] > self.cfg["job_timeout"]:
                     raise Rejected(504, "job deadline exceeded")
+                if not await self.admitted(row["model"]) or not await self.admitted(engine):
+                    self.update(jid, state="queued")
+                    await asyncio.sleep(5)
+                    continue
                 idx = row["next_chunk"]
                 chunk = plan[idx]
                 if chunk["silent"]:
@@ -430,7 +469,13 @@ class AudioJobs:
                 text = stitch(previous[0] if previous else "", text, chunk["overlap"])
                 self.db.execute(
                     "INSERT OR REPLACE INTO chunks VALUES (?,?,?,?,?)",
-                    (jid, idx, chunk["start"], chunk["end"], text),
+                    (
+                        jid,
+                        idx,
+                        chunk.get("infer_start", chunk["start"]),
+                        chunk.get("infer_end", chunk["end"]),
+                        text,
+                    ),
                 )
                 self.update(jid, next_chunk=idx + 1, state="queued")
                 failures = 0
@@ -455,6 +500,27 @@ class AudioJobs:
     def user_limit(self, owner):
         cfg = self.app["config"]
         return next((u.max_pending for u in cfg.users if u.name == owner), cfg.trusted_max_pending)
+
+    async def admitted(self, model_id):
+        """Optional proxy control plane; outages pause durable work, never lose it."""
+        if not self.catalog_url:
+            return True
+        async with self.catalog_lock:
+            if time.monotonic() - self.catalog_at >= 5:
+                self.catalog_models = set()
+                try:
+                    async with self.app["http"].get(
+                        self.catalog_url, timeout=aiohttp.ClientTimeout(total=5)
+                    ) as response:
+                        response.raise_for_status()
+                        payload = await response.json()
+                    self.catalog_models = {
+                        m["id"] for m in payload["models"] if m.get("status") in {"ready", "degraded"}
+                    }
+                except (aiohttp.ClientError, TimeoutError, ValueError, KeyError, TypeError, AttributeError):
+                    LOG.warning("speech admission catalog unavailable")
+                self.catalog_at = time.monotonic()
+        return model_id in self.catalog_models
 
     def result(self, row, fmt):
         segments = [
@@ -574,6 +640,8 @@ async def submit(request):
                 raise Rejected(404, "unknown transcription model")
             if "*" not in allowed and model.id not in allowed:
                 raise Rejected(403, "model not allowed for this user")
+            if not await manager.admitted(model.id):
+                raise Rejected(503, "transcription model disabled or proxy catalog unavailable")
             backend = request.match_info.get("backend")
             if backend and backend != model.parameters.get("route", model.id):
                 raise Rejected(400, "model does not match backend")
@@ -586,6 +654,15 @@ async def submit(request):
                 raise Rejected(400, "language must be an ISO code or ISO-script identifier")
             if manager.row(jid)["state"] == "cancelled":
                 raise Rejected(409, "audio upload was cancelled")
+            engine = model.parameters.get("language_models", {}).get(language, model.id)
+            if (
+                engine not in request.app["config"].models
+                or request.app["config"].models[engine].kind != "stt"
+            ):
+                raise Rejected(503, "configured transcription engine unavailable")
+            if not await manager.admitted(engine):
+                raise Rejected(503, "transcription engine disabled or proxy catalog unavailable")
+            fields["engine_model"] = engine
             manager.update(jid, model=model.id, options=json.dumps(fields), state="uploaded")
     except BaseException:
         if manager.row(jid)["state"] != "cancelled":
