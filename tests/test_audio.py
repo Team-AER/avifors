@@ -268,3 +268,30 @@ async def test_fragmented_worker_json(aiohttp_client, aiohttp_server, tmp_path):
     r = await client.post("/v1/audio/transcriptions", data=form(), headers=AUTH)
     assert r.status == 200
     assert (await r.json())["text"] == "complete transcript"
+
+
+async def test_cancel_upload_cannot_resurrect_job(aiohttp_client, aiohttp_server, tmp_path):
+    client, life, cfg = await service(aiohttp_client, aiohttp_server, tmp_path)
+    cfg.users[0].models = ["speech"]
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def upload():
+        yield b"x" * 65536
+        entered.set()
+        await release.wait()
+        yield b"y" * 65536
+
+    data = aiohttp.FormData()
+    data.add_field("model", "speech")
+    data.add_field("file", upload(), filename="test.wav")
+    task = asyncio.create_task(client.post("/v1/audio/transcriptions/jobs", data=data, headers=AUTH))
+    await entered.wait()
+    await until(lambda: client.app["audio"].db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0] == 1)
+    listing = await (await client.get("/v1/audio/transcriptions/jobs", headers=AUTH)).json()
+    jid = listing["data"][0]["id"]
+    response = await client.delete("/v1/audio/transcriptions/jobs/" + jid, headers=AUTH)
+    assert (await response.json())["status"] == "cancelled"
+    release.set()
+    assert (await task).status == 409
+    assert client.app["audio"].row(jid)["state"] == "cancelled"
+    assert not life.events

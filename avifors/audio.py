@@ -267,7 +267,11 @@ class AudioJobs:
 
     def authorized(self, job_id, user, allowed):
         row = self.row(job_id)
-        if not row or row["owner"] != user or ("*" not in allowed and row["model"] not in allowed):
+        if (
+            not row
+            or row["owner"] != user
+            or (row["model"] and "*" not in allowed and row["model"] not in allowed)
+        ):
             raise Rejected(404, "unknown transcription job")
         return row
 
@@ -506,7 +510,9 @@ async def list_jobs(request):
     return web.json_response(
         {
             "object": "list",
-            "data": [manager.view(r) for r in rows if "*" in allowed or r["model"] in allowed],
+            "data": [
+                manager.view(r) for r in rows if not r["model"] or "*" in allowed or r["model"] in allowed
+            ],
         },
         headers={"Cache-Control": "no-store"},
     )
@@ -546,6 +552,8 @@ async def submit(request):
                     has_file = True
                     with (manager.root / jid / "source").open("wb") as out:
                         while chunk := await part.read_chunk(65536):
+                            if manager.row(jid)["state"] == "cancelled":
+                                raise Rejected(409, "audio upload was cancelled")
                             size += len(chunk)
                             if size > manager.cfg["max_upload_bytes"]:
                                 raise Rejected(413, "audio upload limit exceeded")
@@ -576,9 +584,12 @@ async def submit(request):
             language = fields.get("language", "")
             if language and not re.fullmatch(r"[A-Za-z]{2,3}(?:_[A-Za-z]{4})?", language):
                 raise Rejected(400, "language must be an ISO code or ISO-script identifier")
+            if manager.row(jid)["state"] == "cancelled":
+                raise Rejected(409, "audio upload was cancelled")
             manager.update(jid, model=model.id, options=json.dumps(fields), state="uploaded")
     except BaseException:
-        manager.update(jid, state="failed", error="upload rejected or interrupted")
+        if manager.row(jid)["state"] != "cancelled":
+            manager.update(jid, state="failed", error="upload rejected or interrupted")
         shutil.rmtree(manager.root / jid, ignore_errors=True)
         manager.update(jid, reserved=0)
         raise
