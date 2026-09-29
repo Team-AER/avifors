@@ -57,6 +57,10 @@ class Model:
             command(self.verify_stopped)
         if self.kind not in {"openai", "sdapi", "stt"}:
             raise ValueError("kind must be openai, sdapi or stt")
+        if self.kind == "sdapi":
+            from .image_profiles import validate_profile
+
+            validate_profile(self.parameters)
         if not self.id or self.concurrency < 1 or self.max_pending < 1:
             raise ValueError("invalid model ID or queue/concurrency limit")
         for key in (

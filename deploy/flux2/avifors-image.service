@@ -1,0 +1,18 @@
+[Unit]
+Description=Avifors managed FLUX.2 Klein 9B FP8 worker
+After=network.target
+
+[Service]
+Type=simple
+User=avifors
+Group=avifors
+ExecStart=/opt/imagegen/stable-diffusion.cpp/build/bin/sd-server --diffusion-model /var/lib/avifors/image-models/flux2-klein-9b/transformer/flux-2-klein-9b-fp8.safetensors --llm /var/lib/avifors/image-models/flux2-klein-9b/text_encoder/Qwen3-8B-Q8_0.gguf --vae /var/lib/avifors/image-models/flux2-klein-9b/vae/vae/diffusion_pytorch_model.safetensors --listen-ip 127.0.0.1 --listen-port 1234 --threads 6 --offload-to-cpu --diffusion-fa --vae-tiling --mmap
+Restart=no
+TimeoutStopSec=8
+KillMode=control-group
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+MemoryMax=28G
+TasksMax=512

@@ -1,0 +1,33 @@
+# Merge this entry into config.yaml's models list. Keep your existing public ID.
+id: your-image-model
+kind: sdapi
+upstream: http://127.0.0.1:1234
+health_path: /v1/models
+paths: [/v1/images/generations]
+start: [sudo, /usr/local/sbin/avifors-worker, start, image]
+stop: [sudo, /usr/local/sbin/avifors-worker, stop, image]
+verify_stopped: [sudo, /usr/local/sbin/avifors-worker, verify, image]
+concurrency: 1
+max_pending: 3
+idle_timeout: 300
+max_hold: 300
+max_runtime: 300
+activation_timeout: 240
+queue_timeout: 480
+release_timeout: 20
+parameters:
+  route: image
+  default_size: 640x640
+  sizes: [512x512, 640x640, 512x768, 768x512, 1024x1024, 768x1152, 1152x768]
+  render_sizes:
+    512x512: 1024x1024
+    640x640: 1024x1024
+    512x768: 768x1152
+    768x512: 1152x768
+  steps: 4
+  cfg_scale: 1
+  sampler_name: euler
+  scheduler: flux2
+  negative_prompt_mode: instruction
+metadata:
+  display_name: FLUX.2 Klein 9B FP8

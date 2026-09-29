@@ -4,13 +4,13 @@ build-backend = "hatchling.build"
 
 [project]
 name = "avifors"
-version = "0.2.0"
+version = "0.3.0"
 description = "Demand-loaded GPU inference with bounded leases and multi-user scheduling"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
 authors = [{name = "Team AER"}]
-dependencies = ["aiohttp>=3.12.15,<4", "PyYAML>=6.0.2,<7"]
+dependencies = ["aiohttp>=3.12.15,<4", "PyYAML>=6.0.2,<7", "Pillow>=11.3,<13"]
 
 [project.optional-dependencies]
 audio = ["numpy>=1.26,<3", "onnxruntime>=1.20,<2"]

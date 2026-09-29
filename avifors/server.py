@@ -20,13 +20,13 @@ from aiohttp import web
 
 from .audio import AudioJobs, inspect_job, list_jobs, submit
 from .config import load
+from .image_profiles import LEGACY_SIZES, dimensions, resize_png
 from .lifecycle import Lifecycle
 from .scheduler import Rejected, Scheduler
 from .telemetry import Telemetry
 
 LOG = logging.getLogger(__name__)
 NAME = re.compile(r"[A-Za-z0-9_-]{32}\.png\Z")
-SIZES = {"512x512": (512, 512), "640x640": (640, 640), "512x768": (512, 768), "768x512": (768, 512)}
 FORWARD = {"content-type", "x-request-id", "x-session-id", "x-workflow-id", "traceparent", "tracestate"}
 
 
@@ -176,9 +176,11 @@ def sd_payload(body, model):
     size = r.get("size", model.parameters.get("default_size", "640x640"))
     if size == "auto":
         size = model.parameters.get("default_size", "640x640")
-    if not isinstance(size, str) or size not in SIZES:
+    if not isinstance(size, str) or size not in model.parameters.get("sizes", LEGACY_SIZES):
         raise Rejected(400, "unsupported image size")
-    width, height = SIZES[size]
+    output_size = dimensions(size)
+    render_size = model.parameters.get("render_sizes", {}).get(size, size)
+    width, height = dimensions(render_size)
     p = {
         "prompt": prompt,
         "width": width,
@@ -192,8 +194,12 @@ def sd_payload(body, model):
     for k in ("steps", "cfg_scale", "sampler_name", "scheduler"):
         if k in model.parameters:
             p[k] = model.parameters[k]
-    if "negative_prompt" in r:
+    if r.get("negative_prompt") and model.parameters.get("negative_prompt_mode") == "instruction":
+        p["prompt"] += "\n\nExclude the following from the image: " + r["negative_prompt"].strip()
+    elif "negative_prompt" in r:
         p["negative_prompt"] = r["negative_prompt"]
+    if (width, height) != output_size:
+        p["_output_size"] = output_size
     return p
 
 
@@ -213,7 +219,10 @@ def atomic(path, data):
 
 async def generate(request, model, payload, user):
     cfg = request.app["config"]
-    async with request.app["http"].post(model.upstream + "/sdapi/v1/txt2img", json=payload) as response:
+    worker_payload = {k: v for k, v in payload.items() if k != "_output_size"}
+    async with request.app["http"].post(
+        model.upstream + "/sdapi/v1/txt2img", json=worker_payload
+    ) as response:
         response.raise_for_status()
         # Bound encoded image responses too; don't accept an unbounded upstream payload.
         chunks, size = [], 0
@@ -230,6 +239,10 @@ async def generate(request, model, payload, user):
     data = base64.b64decode(encoded, validate=True)
     if not data.startswith(b"\x89PNG\r\n\x1a\n") or len(data) > 20 * 1024 * 1024:
         raise ValueError("invalid PNG result")
+    if "_output_size" in payload:
+        data = await asyncio.to_thread(
+            resize_png, data, payload["_output_size"], (payload["width"], payload["height"])
+        )
     name = secrets.token_urlsafe(24) + ".png"
     # Keep ownership across restarts without storing user prompts in the broker.
     atomic(cfg.store / (name + ".json"), json.dumps({"user": user}).encode())

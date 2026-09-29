@@ -108,6 +108,10 @@ point to a route that serves or durably archives those images; the supplied rout
 `/generated/NAME.png`. Set a trusted-network gateway to archive before acknowledging
 if URLs must outlive the configurable local artifact TTL (default 24 hours).
 
+For FLUX.2 Klein 9B FP8, see the [deployment guide](FLUX2.md) and
+`deploy/flux2/` examples. Per-model render profiles support native resolutions and
+higher-resolution rendering with exact legacy output dimensions.
+
 OpenAI workers receive JSON/multipart bodies without sampling rewrites. Register
 only supported paths. Existing response headers and W3C/request/session/workflow
 context are forwarded; worker credentials, cookies and lifecycle endpoints are not.
