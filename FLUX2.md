@@ -22,6 +22,14 @@ into the component directories shown in the unit; do this before serving traffic
 | Text encoder | unsloth/Qwen3-8B-GGUF | a6adef130ffb23ddaf1a62fec9dced968c9bc482 | Qwen3-8B-Q8_0.gguf |
 | Shared FLUX.2 VAE | black-forest-labs/FLUX.2-klein-4B | e7b7dc27f91deacad38e78976d1f2b499d76a294 | vae/diffusion_pytorch_model.safetensors |
 
+Verified SHA-256 checksums:
+
+```text
+865ba09f5b4c3cbd3468a4bd3acb9fcb2f8740c54317482f0bcd4ed1d3655cee  flux-2-klein-9b-fp8.safetensors
+0cfbf745760f07a76ddeb358dd025a27f2e11d1ca9c9a4169a373d52990fe86e  Qwen3-8B-Q8_0.gguf
+ca70d2202afe6415bdbcb8793ba8cd99fd159cfe6192381504d6c4d3036e0f04  vae/diffusion_pytorch_model.safetensors
+```
+
 The model host requires access approval for the 9B weights. Use your own authorized
 Hugging Face credential for downloads, never publish it or bake it into the worker
 unit. The code's MIT license does not relicense model weights; review their licenses
@@ -31,6 +39,12 @@ CPU offload and memory mapping allow model stages to share GPU memory. The examp
 assumes a 16 GiB NVIDIA GPU and 32 GiB host RAM; qualify your hardware with a cold
 request and a model handoff. Keep the five-minute ownership cap; do not extend it
 to hide an incompatible model. Worker processes fully exit on release.
+
+An RTX 4060 Ti 16 GiB qualification run produced a 1024x1024 image in 25.02
+seconds inside the worker, with 10,922 MiB sampled peak device memory. Loading
+the worker's HTTP service took about one second; weight transfers and inference
+are included in the generation time. Queueing behind another model is additional.
+These are single-run measurements, not a throughput or quality benchmark.
 
 ## Image behavior
 
