@@ -126,8 +126,16 @@ Torch on CPU or CUDA, or ONNX Runtime on CPU (Laya's `scripts/export_onnx.py`). 
 export for fine-tuned checkpoints:** it agreed with the torch model on only 78–79% of answers
 (probabilities moved by 0.22 on average) on our Hedwig and Pensieve tasks. Use torch fp32 on CPU.
 One request is scored at a time; logs carry sizes and timings only, never states or questions.
-Install into its own venv with `pip install '.[decision]'`; `deploy/decision/avifors-decision.service`
-runs it as the `avifors` user with CUDA hidden, 6 threads and a 6 GB memory cap.
+Install into its own venv with `pip install '.[decision]'`. The units in `deploy/decision/` run each
+checkpoint as the `avifors` user with CUDA hidden, 3 threads, offline Hugging Face and a 4 GB memory cap:
+
+| Model | Unit | Port | Checkpoint |
+|---|---|---|---|
+| `aer-laya` (Hedwig + Pensieve multitask) | `avifors-decision.service` | 18004 | `/var/lib/avifors/decision/aer-laya` |
+| `aer-laya-hedwig` (Hedwig only) | `avifors-decision-hedwig.service` | 18005 | `/var/lib/avifors/decision/aer-laya-hedwig` |
+| `aer-laya-guard` (mail threats) | `avifors-decision-guard.service` | 18006 | `/var/lib/avifors/decision/aer-laya-guard` |
+
+All three sit in the `cpu` pool at `memory_mib: 3000` each, so the pool capacity is 10000.
 
 ## Deployment checklist
 

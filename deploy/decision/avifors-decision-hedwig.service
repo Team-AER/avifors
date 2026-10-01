@@ -1,5 +1,5 @@
 [Unit]
-Description=Avifors on-demand System One decision worker (aer-laya)
+Description=Avifors on-demand System One decision worker (aer-laya-hedwig)
 After=network-online.target
 
 [Service]
@@ -14,7 +14,7 @@ Environment=HF_HUB_OFFLINE=1
 Environment=TRANSFORMERS_OFFLINE=1
 # CPU lane: never touch the managed GPU.
 Environment=CUDA_VISIBLE_DEVICES=
-ExecStart=/opt/avifors-decision-venv/bin/python -m avifors.decision_worker --checkpoint /var/lib/avifors/decision/aer-laya --threads 3 --port 18004 --card aer-laya
+ExecStart=/opt/avifors-decision-venv/bin/python -m avifors.decision_worker --checkpoint /var/lib/avifors/decision/aer-laya-hedwig --threads 3 --port 18005 --card aer-laya-hedwig
 Restart=no
 TimeoutStopSec=10
 KillMode=control-group
