@@ -3,7 +3,9 @@ from __future__ import annotations
 import argparse
 import asyncio
 import base64
+import collections.abc
 import contextlib
+import dataclasses
 import hmac
 import ipaddress
 import json
@@ -22,7 +24,9 @@ from .audio import AudioJobs, inspect_job, list_jobs, submit
 from .config import load
 from .image_profiles import LEGACY_SIZES, dimensions, resize_png
 from .lifecycle import Lifecycle
+from .pool import PoolScheduler
 from .scheduler import Rejected, Scheduler
+from .systemone import BODY_TOO_LARGE, MAX_BODY, Invalid, error_body, parse
 from .telemetry import Telemetry
 
 LOG = logging.getLogger(__name__)
@@ -78,20 +82,24 @@ async def errors(request, handler):
 
 async def models(request):
     _, allowed, _ = identity(request)
-    cfg, scheduler = request.app["config"], request.app["scheduler"]
+    cfg = request.app["config"]
     entries = list(cfg.models.values())
     backend = request.match_info.get("backend")
     if backend:
         entries = [m for m in entries if m.parameters.get("route", m.id) == backend]
         if not entries:
             raise Rejected(404, "unknown backend")
-        if scheduler.fault or any(m.id in scheduler.model_faults for m in entries):
-            raise Rejected(503, "model worker faulted")
+        for m in entries:
+            lane = lane_scheduler(request.app, m)
+            if lane.fault or m.id in lane.model_faults:
+                raise Rejected(503, "model worker faulted")
     return web.json_response(
         {
             "object": "list",
             "data": [
-                m.metadata | {"id": m.id, "object": "model", "owned_by": "avifors"}
+                ({"capabilities": ["systemone"]} if m.kind == "decision" else {})
+                | m.metadata
+                | {"id": m.id, "object": "model", "owned_by": "avifors"}
                 for m in entries
                 if "*" in allowed or m.id in allowed
             ],
@@ -101,15 +109,15 @@ async def models(request):
 
 async def health(request):
     identity(request)
-    scheduler = request.app["scheduler"]
-    return web.json_response(
-        {"status": "fault" if scheduler.fault else "ok"}, status=503 if scheduler.fault else 200
-    )
+    fault = any(s.fault for s in request.app["schedulers"].values())
+    return web.json_response({"status": "fault" if fault else "ok"}, status=503 if fault else 200)
 
 
 async def state(request):
     admin(request)
-    return web.json_response(request.app["scheduler"].snapshot())
+    snapshot = request.app["scheduler"].snapshot()
+    lanes = {name: s.snapshot() for name, s in request.app["schedulers"].items() if s is not request.app["scheduler"]}
+    return web.json_response(snapshot | ({"lanes": lanes} if lanes else {}))
 
 
 async def metrics(request):
@@ -150,6 +158,14 @@ async def metrics(request):
                         output.append(await r.text())
             except (aiohttp.ClientError, TimeoutError):
                 pass
+    for name, lane in request.app["schedulers"].items():
+        if lane is not request.app["scheduler"]:
+            ls = lane.snapshot()
+            output += [
+                f'avifors_lane_active{{lane="{name}"}} {ls["active"]}',
+                f'avifors_lane_queued{{lane="{name}"}} {ls["queued"]}',
+                f'avifors_lane_up{{lane="{name}"}} {int(not ls["fault"])}',
+            ]
     output.append(f"avifors_trace_dropped_total {request.app['telemetry'].dropped}")
     if "audio" in request.app:
         audio = request.app["audio"]
@@ -335,7 +351,7 @@ async def infer(request):
         if payload is not None
         else (lambda: forward(request, model, body, path, holder))
     )
-    scheduler = request.app["scheduler"]
+    scheduler = lane_scheduler(request.app, model)
     job = scheduler.enqueue(model, user, limit, call)
     started_ns, status = time.time_ns(), "error"
     try:
@@ -382,6 +398,116 @@ async def infer(request):
         )
 
 
+class LaneModels(collections.abc.Mapping):
+    """Live view of the configured models in one lane (the configuration may gain models at runtime)."""
+
+    def __init__(self, models, lane):
+        self.models, self.lane = models, lane
+
+    def __getitem__(self, key):
+        model = self.models[key]
+        if model.lane != self.lane:
+            raise KeyError(key)
+        return model
+
+    def __iter__(self):
+        return (k for k, m in self.models.items() if m.lane == self.lane)
+
+    def __len__(self):
+        return sum(1 for _ in self)
+
+
+def lane_scheduler(app, model):
+    return app["schedulers"][model.lane]
+
+
+async def read_capped(request, limit):
+    """Read at most `limit` bytes; None if the body is larger (decided before buffering it all)."""
+    if request.content_length is not None and request.content_length > limit:
+        return None
+    chunks, size = [], 0
+    async for chunk in request.content.iter_chunked(65536):
+        size += len(chunk)
+        if size > limit:
+            return None
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+async def systemone(request):
+    """Ollama/Nimble-compatible `POST /v1/systemone`: errors are {"error": "..."}, never the
+    OpenAI-style object other Avifors routes use, so Ollama clients parse them unchanged."""
+    try:
+        return await decide(request)
+    except Rejected as exc:
+        return web.json_response(
+            error_body(exc.message),
+            status=exc.status,
+            headers={"Retry-After": "5"} if exc.status in {429, 503} else {},
+        )
+    except Invalid as exc:
+        return web.json_response(error_body(str(exc)), status=400)
+    except (asyncio.CancelledError, ConnectionResetError):
+        raise
+    except Exception:
+        LOG.exception("decision request failed")
+        return web.json_response(error_body("decision worker failed"), status=500)
+
+
+async def decide(request):
+    user, allowed, limit = identity(request)
+    cfg = request.app["config"]
+    body = await read_capped(request, MAX_BODY)
+    if body is None:
+        raise Rejected(413, BODY_TOO_LARGE)
+    req = parse(body)  # validated before any worker is woken
+    model_id = req["model"]
+    model = cfg.models.get(model_id)
+    if model is None or ("*" not in allowed and model_id not in allowed):
+        raise Rejected(404, f'model "{model_id}" not found')
+    if model.kind != "decision":
+        raise Rejected(400, f'model "{model_id}" does not support systemone')
+    backend = request.match_info.get("backend")
+    if backend and backend != model.parameters.get("route", model.id):
+        raise Rejected(400, "model does not match backend")
+    headers = {k: v for k, v in request.headers.items() if k.lower() in FORWARD}
+    headers["Content-Type"] = "application/json"
+
+    async def call():
+        async with request.app["http"].post(model.upstream + "/v1/systemone", data=body, headers=headers) as r:
+            data = await r.read()
+            return web.Response(body=data, status=r.status, content_type="application/json")
+
+    scheduler = lane_scheduler(request.app, model)
+    job = scheduler.enqueue(model, user, limit, call)
+    started_ns, status = time.time_ns(), "error"
+    try:
+        while not job.future.done():
+            if request.transport is None or request.transport.is_closing():
+                scheduler.cancel(job)
+                raise ConnectionResetError("client disconnected")
+            await asyncio.wait({job.future}, timeout=0.05)
+        result = job.future.result()
+        status = "ok" if result.status < 400 else "error"
+        return result
+    except BaseException:
+        scheduler.cancel(job)
+        raise
+    finally:
+        def retrieve(f):
+            if not f.cancelled():
+                f.exception()
+
+        job.future.add_done_callback(retrieve)
+        request.app["telemetry"].record(
+            request.headers.get("traceparent"),
+            model.id,
+            started_ns,
+            (job.started or time.monotonic()) - job.queued,
+            status,
+        )
+
+
 async def prune(app):
     while True:
         cfg = app["config"]
@@ -400,9 +526,27 @@ async def context(app):
     ) as http:
         app["http"] = http
         app["telemetry"] = Telemetry(http, cfg.otlp_endpoint)
-        lifecycle = app.get("lifecycle") or Lifecycle(cfg, http)
-        app["scheduler"] = Scheduler(cfg, lifecycle)
-        await app["scheduler"].start()
+        given = app.get("lifecycle")
+        app["schedulers"] = {}
+        for lane in sorted({m.lane for m in cfg.models.values()}, key=lambda name: name != "gpu"):
+            # Each lane owns its models exclusively; only the GPU lane runs the device release check.
+            lane_cfg = dataclasses.replace(
+                cfg,
+                models=LaneModels(cfg.models, lane),
+                release_check=cfg.release_check if lane == "gpu" else None,
+            )
+            if isinstance(given, dict):
+                lifecycle = given[lane]
+            else:
+                lifecycle = (given if lane == "gpu" else None) or Lifecycle(lane_cfg, http)
+            capacity = cfg.lanes.get(lane, {}).get("capacity_mib")
+            app["schedulers"][lane] = (
+                PoolScheduler(lane_cfg, lifecycle, capacity) if capacity else Scheduler(lane_cfg, lifecycle)
+            )
+        # Admin state, metrics, audio jobs and image metrics keep reading the GPU lane.
+        app["scheduler"] = app["schedulers"].get("gpu") or next(iter(app["schedulers"].values()))
+        for lane_sched in app["schedulers"].values():
+            await lane_sched.start()
         if any(m.kind == "stt" for m in cfg.models.values()):
             app["audio"] = AudioJobs(app)
             await app["audio"].start()
@@ -416,7 +560,8 @@ async def context(app):
                 await pruner
             if "audio" in app:
                 await app["audio"].close()
-            await app["scheduler"].close()
+            for lane_sched in app["schedulers"].values():
+                await lane_sched.close()
             await app["telemetry"].close()
 
 
@@ -442,6 +587,8 @@ def create_app(cfg, lifecycle=None):
             web.get("/v1/audio/transcriptions/jobs/{job}/result", inspect_job),
             web.post("/v1/audio/transcriptions/jobs/{job}/retry", inspect_job),
             web.post("/backend/{backend}/v1/audio/transcriptions", submit),
+            web.post("/v1/systemone", systemone),
+            web.post("/backend/{backend}/v1/systemone", systemone),
             web.post("/v1/{tail:.*}", infer),
             web.post("/backend/{backend}/v1/{tail:.*}", infer),
         ]

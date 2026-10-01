@@ -3,6 +3,7 @@ from __future__ import annotations
 import ipaddress
 import math
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -45,6 +46,11 @@ class Model:
     verify_stopped: list[str] | None = None
     parameters: dict = field(default_factory=dict)
     metadata: dict = field(default_factory=dict)
+    # Models in one lane share one exclusive residency slot. "gpu" is the single-GPU slot; a model
+    # in another lane (e.g. a CPU decision worker) gets its own scheduler and never evicts the GPU.
+    lane: str = "gpu"
+    # Resident memory, used only by lanes with a capacity (pool mode) to decide what fits together.
+    memory_mib: float = 0
 
     def __post_init__(self):
         u = urlsplit(self.upstream)
@@ -55,8 +61,15 @@ class Model:
         command(self.stop)
         if self.verify_stopped:
             command(self.verify_stopped)
-        if self.kind not in {"openai", "sdapi", "stt"}:
-            raise ValueError("kind must be openai, sdapi or stt")
+        if self.kind not in {"openai", "sdapi", "stt", "decision"}:
+            raise ValueError("kind must be openai, sdapi, stt or decision")
+        if not re.fullmatch(r"[a-z0-9_-]{1,32}", self.lane):
+            raise ValueError("lane must be a short lowercase name")
+        if self.kind == "decision":
+            if self.paths == ["/v1/chat/completions", "/v1/completions"]:
+                self.paths = ["/v1/systemone"]
+            if self.paths != ["/v1/systemone"]:
+                raise ValueError("decision models serve only /v1/systemone")
         if self.kind == "sdapi":
             from .image_profiles import validate_profile
 
@@ -73,6 +86,7 @@ class Model:
         ):
             setattr(self, key, positive(getattr(self, key), key))
         self.idle_timeout = positive(self.idle_timeout, "idle_timeout", zero=True)
+        self.memory_mib = positive(self.memory_mib, "memory_mib", zero=True)
         if not self.paths or any(not p.startswith("/v1/") for p in self.paths):
             raise ValueError("only explicit /v1/ inference paths are allowed")
 
@@ -104,6 +118,8 @@ class Config:
     release_check: list[str] | None = None
     otlp_endpoint: str = ""
     audio: dict = field(default_factory=dict)
+    # {lane: {"capacity_mib": N}}: lanes with a capacity keep every model that fits resident together.
+    lanes: dict = field(default_factory=dict)
 
 
 def load(path):
@@ -136,4 +152,18 @@ def load(path):
     cfg.drain_margin = positive(cfg.drain_margin, "drain_margin", zero=True)
     if cfg.release_check:
         command(cfg.release_check)
+    validate_lanes(cfg)
     return cfg
+
+
+def validate_lanes(cfg):
+    used = {m.lane for m in cfg.models.values()}
+    for lane, spec in cfg.lanes.items():
+        if lane not in used or not isinstance(spec, dict) or set(spec) - {"capacity_mib"}:
+            raise ValueError(f"lane {lane!r}: unknown lane or settings (only capacity_mib)")
+        capacity = positive(spec.get("capacity_mib", 0), f"lanes.{lane}.capacity_mib")
+        for m in cfg.models.values():
+            if m.lane == lane and not 0 < m.memory_mib <= capacity:
+                raise ValueError(f"model {m.id!r}: memory_mib must be positive and fit lane {lane!r} capacity")
+        if lane == "gpu" and cfg.release_check:
+            raise ValueError("a pooled gpu lane cannot use release_check (it asserts an empty device)")

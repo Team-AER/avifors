@@ -1,0 +1,27 @@
+[Unit]
+Description=Avifors on-demand System One decision worker (Laya)
+After=network-online.target
+
+[Service]
+Type=simple
+User=avifors
+Group=avifors
+WorkingDirectory=/opt/avifors
+Environment=HOME=/var/lib/avifors
+Environment=OMP_NUM_THREADS=6
+Environment=TOKENIZERS_PARALLELISM=false
+# CPU lane: never touch the managed GPU, so the decision lane cannot evict the text/image/speech owner.
+Environment=CUDA_VISIBLE_DEVICES=
+ExecStart=/opt/avifors-decision-venv/bin/python -m avifors.decision_worker \
+    --checkpoint /var/lib/avifors/decision/aer-laya --threads 6 --port 18004 --card aer-laya
+Restart=no
+TimeoutStopSec=10
+KillMode=control-group
+MemoryMax=6G
+MemorySwapMax=0
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/avifors
+UMask=0077
+# No Install section: the broker alone owns lifecycle and boot decisions.

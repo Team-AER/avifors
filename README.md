@@ -149,3 +149,11 @@ jobs accept multi-hour recordings, checkpoint progress, survive restarts, and
 provide polling, cancellation and transcript/subtitle downloads through the
 proxy. See [STT.md](STT.md) for the API, limits, retention, model/runtime setup and
 quality limitations. The text and image runtime settings are independent.
+
+## Decision models
+
+`kind: decision` workers answer Ollama/Nimble-compatible `POST /v1/systemone` requests (typed
+choice / yes-no / score questions, probabilities instead of text). Run them in their own `lane`
+(e.g. `lane: cpu`) so decisions never evict the GPU-resident model. A lane with `capacity_mib`
+keeps every model that fits resident together (pool mode, models declare `memory_mib`); lanes
+without one keep exclusive single-owner scheduling. See [DECISION.md](DECISION.md).

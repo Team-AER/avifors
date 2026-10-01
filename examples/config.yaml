@@ -43,3 +43,15 @@ models:
       cfg_scale: 7
       sampler_name: dpm++2m
       scheduler: karras
+  - id: your-decision-model
+    kind: decision            # Ollama/Nimble-compatible POST /v1/systemone
+    lane: cpu                 # own scheduler: never evicts the GPU-resident model
+    upstream: http://127.0.0.1:18004
+    start: [sudo, /usr/local/sbin/avifors-worker, start, decision]
+    stop: [sudo, /usr/local/sbin/avifors-worker, stop, decision]
+    verify_stopped: [sudo, /usr/local/sbin/avifors-worker, verify, decision]
+    concurrency: 1
+    idle_timeout: 900
+    max_hold: 3600            # no competitor in a CPU lane; bounds one ownership epoch
+    max_runtime: 60
+    parameters: {route: decision}
