@@ -126,28 +126,39 @@ Torch on CPU or CUDA, or ONNX Runtime on CPU (Laya's `scripts/export_onnx.py`). 
 export for fine-tuned checkpoints:** it agreed with the torch model on only 78–79% of answers
 (probabilities moved by 0.22 on average) on our Hedwig and Pensieve tasks. Use torch fp32 on CPU.
 One request is scored at a time; logs carry sizes and timings only, never states or questions.
-Install into its own venv with `pip install '.[decision]'`. The units in `deploy/decision/` run each
-checkpoint as the `avifors` user with CUDA hidden, 3 threads, offline Hugging Face and a 4 GB memory cap:
+In production each checkpoint runs in its own container from the `avifors-decision` image
+(`deploy/docker/avifors-decision.Dockerfile`: Python 3.14, CPU torch from the PyTorch CPU index,
+hash-pinned in `deploy/docker/requirements/decision.txt`). The compose services run as the
+`avifors` user (996:990) without the NVIDIA runtime and with `CUDA_VISIBLE_DEVICES=`, 3 threads,
+offline Hugging Face, a read-only root and the checkpoint mounted read-only, and a 4 GB memory cap
+without swap:
 
-| Model | Unit | Port | Checkpoint |
-|---|---|---|---|
-| `aer-laya` (Hedwig + Pensieve multitask) | `avifors-decision.service` | 18004 | `/var/lib/avifors/decision/aer-laya` |
-| `aer-laya-hedwig` (Hedwig only) | `avifors-decision-hedwig.service` | 18005 | `/var/lib/avifors/decision/aer-laya-hedwig` |
-| `aer-laya-guard` (mail threats) | `avifors-decision-guard.service` | 18006 | `/var/lib/avifors/decision/aer-laya-guard` |
+| Model | Role / compose service | Container | Port | Checkpoint |
+|---|---|---|---|---|
+| `aer-laya` (Hedwig + Pensieve multitask) | `decision` | `avifors-w-decision` | 18004 | `/var/lib/avifors/decision/aer-laya` |
+| `aer-laya-hedwig` (Hedwig only) | `decision-hedwig` | `avifors-w-decision-hedwig` | 18005 | `/var/lib/avifors/decision/aer-laya-hedwig` |
+| `aer-laya-guard` (mail threats) | `decision-guard` | `avifors-w-decision-guard` | 18006 | `/var/lib/avifors/decision/aer-laya-guard` |
+
+The legacy units in `deploy/decision/` (venv from `pip install '.[decision]'`, same settings) are
+kept for the rollback window only.
 
 All three sit in the `cpu` pool at `memory_mib: 3000` each, so the pool capacity is 10000.
 
 ## Deployment checklist
 
-1. Copy the checkpoint to `/var/lib/avifors/decision/aer-laya` (no network fetch at runtime).
-2. Create `/opt/avifors-decision-venv`, install `.[decision]`; install the unit and the updated
-   `/usr/local/sbin/avifors-worker` (root-owned, the worker allowlisted).
-3. Add the worker's `start`, `stop` and `verify` commands to the broker's sudoers entry and validate it
-   with `visudo -cf`. Every decision worker needs its own three lines: without them the broker exits
-   during startup recovery with "worker command failed (exit 1)".
-4. Add the `kind: decision`, `lane: cpu` model to `/etc/avifors/config.yaml` (keep mode 644), raise the
-   pool's `capacity_mib` if the new model does not fit beside the residents, and run `avifors --check`.
-5. In a maintenance window (`/admin/state` idle), restart the broker; verify with
-   `scripts/systemone_conformance.py` and a real request through llm-proxy.
-6. llm-proxy (LiteLLM) has no System One route: expose `/v1/systemone` as a pass-through endpoint so
+For a new decision model on the Docker deployment ([deploy/README.md](deploy/README.md#docker-deployment)):
+
+1. Copy the checkpoint to `/var/lib/avifors/decision/<id>` (no network fetch at runtime).
+2. Add a compose service next to `decision` in `deploy/docker/compose.yaml` (merge `*decision`, a new
+   `container_name`, the `org.team-aer.avifors.role` label, port and checkpoint mount) and the role
+   to `/etc/avifors/workers.yaml` (root-owned, 0644), then restart the controller. No sudoers change:
+   the broker never gains privilege. A role missing from the allowlist makes `avifors-workerctl` exit 2
+   and the broker exit during startup recovery.
+3. Add the `kind: decision`, `lane: cpu` model with `[avifors-workerctl, start|stop|verify, <role>]`
+   commands to `/etc/avifors/config.yaml` (keep root:root mode 644), raise the pool's `capacity_mib`
+   if the new model does not fit beside the residents, and run `avifors --check` in the broker image.
+4. In a maintenance window (`/admin/state` idle), stop the broker, `docker compose --profile workers
+   create <service>`, start the broker; verify with `scripts/systemone_conformance.py` and a real
+   request through llm-proxy.
+5. llm-proxy (LiteLLM) has no System One route: expose `/v1/systemone` as a pass-through endpoint so
    apps keep calling the proxy, not Avifors directly.

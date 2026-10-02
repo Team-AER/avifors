@@ -1,0 +1,4 @@
+# Debian/Ubuntu base images are pinned by tag (digests recorded at deploy) and rebuilt for
+# security updates, so apt packages track the base release instead of exact versions.
+ignored:
+  - DL3008

@@ -129,8 +129,30 @@ main database while WAL writes are active. LXC backups cover the store on Atlas.
 
 ## Worker installation
 
-Install FFmpeg and `avifors[audio]` for the broker when using CPU VAD. Install the speech runtime in a **separate venv**
-using `deploy/stt/requirements.lock` (or the pinned input manifest when developing).
+Production runs both speech workers as containers ([Docker deployment](deploy/README.md#docker-deployment)).
+The broker image already contains FFmpeg and `avifors[audio]` for CPU VAD.
+
+| Role | Image | Python | Runtime pins | Port |
+|---|---|---|---|---|
+| `stt` (Omnilingual) | `avifors-stt-omni` | **3.12 (exception)** | `deploy/stt/requirements.lock`: torch 2.8.0 CUDA 12.8, fairseq2/fairseq2n 0.6 | 18002 |
+| `stt-qwen` (Qwen3-ASR) | `avifors-stt-qwen` | 3.14 | `deploy/docker/requirements/stt-qwen.txt`: torch/torchaudio 2.11.0 CUDA 12.8, qwen-asr 0.0.6, transformers 4.57.6 | 18003 |
+
+**Python 3.12 is a time-limited exception for `avifors-stt-omni` only.** omnilingual-asr declares
+`requires-python <=3.12` and fairseq2n publishes wheels only up to CPython 3.12, so the
+Omnilingual engine cannot run on Python 3.14 yet. Every other Avifors image uses Python 3.14.
+Remove the exception (rebase the image on `python:3.14-slim` and refresh the lock) as soon as
+fairseq2/fairseq2n and omnilingual-asr ship Python 3.14 support. Qwen3-ASR has no such
+constraint; its image moved to the first torch release with both CUDA 12.8 and Python 3.14
+wheels for torch and torchaudio.
+
+Both images run as the `avifors` user (996:990) with the NVIDIA runtime, listen on 0.0.0.0
+inside the worker network and are published on 127.0.0.1 only. The Omnilingual container mounts
+`/etc/avifors/stt-assets` and `/var/lib/avifors/stt-models` read-only and
+`/var/lib/avifors/fairseq2` read-write; the Qwen container mounts the models read-only and runs
+with Hugging Face offline.
+
+For the legacy systemd units, install the speech runtime in a **separate venv** using
+`deploy/stt/requirements.lock` (or the pinned input manifest when developing).
 Ubuntu build dependencies include Python development headers, CMake, a C++
 compiler, libsndfile, zlib, libbz2, liblzma and Eigen headers.
 
@@ -143,7 +165,10 @@ install -d -m 750 -o avifors -g avifors /var/lib/avifors/fairseq2
 
 The supplied runtime lock targets Linux x86-64, Python 3.12 and CUDA 12.8.
 
-Install `deploy/stt/avifors-stt.service`, extend the root-owned fixed worker helper
+On Docker, the `stt` and `stt-qwen` roles are already in `deploy/docker/workers.yaml` and
+compose; the model configuration from `examples/stt.yaml` uses
+`[avifors-workerctl, start|stop|verify, stt]` commands instead of sudo. With the legacy units,
+install `deploy/stt/avifors-stt.service`, extend the root-owned fixed worker helper
 and sudo allowlist with `start/stop/verify stt`, and add the model configuration
 from `examples/stt.yaml`. Workers must have no boot/restart policy; only the
 broker starts at boot. Pre-stage the checkpoint/tokenizer before enabling the

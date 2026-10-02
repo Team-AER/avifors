@@ -10,7 +10,9 @@ vLLM's token scheduler.
 
 ## Install
 
-Python 3.11+ on Linux is recommended for production.
+Python 3.14+ is required. Production runs in Docker: see the
+[Docker deployment](deploy/README.md#docker-deployment) and `deploy/docker/`. The Omnilingual
+speech worker image is a temporary Python 3.12 exception (see [STT.md](STT.md)).
 
 ```sh
 python3 -m venv .venv
@@ -22,9 +24,10 @@ avifors --config examples/config.yaml
 ```
 
 Adapt the example's model IDs, paths and worker commands first. Model weights,
-inference runtimes and NVIDIA drivers are installed separately. A systemd example
-is in `deploy/`; run the HTTP broker as a dedicated user. Use a narrowly scoped
-root-owned worker helper when Docker or systemd control requires privilege.
+inference runtimes and NVIDIA drivers are installed separately. The Docker deployment
+runs the broker unprivileged and gives Docker access only to a root sidecar,
+`avifors-controller`, which starts and stops allowlisted, labelled worker containers
+for `avifors-workerctl`. The older systemd example and sudo helper remain in `deploy/`.
 Configuration and worker commands are trusted administrator input, never API input.
 
 ## Multiple users

@@ -5,8 +5,18 @@ stable-diffusion.cpp. It uses the same exclusive GPU scheduler, per-user quotas,
 bounded lease, image endpoint and persistent artifact ownership as other workers.
 Keep your existing public model ID when replacing an older image model.
 
-Use `deploy/flux2/model.yaml` and `deploy/flux2/avifors-image.service` as examples.
-Install only the broker at boot; the image unit must remain static. The fixed
+In production the worker is the `image` service of `deploy/docker/compose.yaml`, built by
+`deploy/docker/avifors-image.Dockerfile`: a multi-stage build on `nvidia/cuda:12.9.1` (devel, then
+runtime) of stable-diffusion.cpp at the revision below with production's flags
+(`-DSD_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=89 -DGGML_CUDA_FA=ON`); only `sd-server` reaches the
+final image. The container runs as the `avifors` user with the same `sd-server` arguments as the
+unit, mounts `/var/lib/avifors/image-models` read-only, is published on `127.0.0.1:1234`, and keeps
+the unit's 28 GiB memory and 512-task limits. The broker controls it with
+`[avifors-workerctl, start|stop|verify, image]`; the rest of `deploy/flux2/model.yaml` applies
+unchanged. Set `CUDA_ARCHITECTURES` at build time for a GPU other than SM 89.
+
+For the legacy deployment, use `deploy/flux2/model.yaml` and `deploy/flux2/avifors-image.service`
+as examples. Install only the broker at boot; the image unit must remain static. The fixed
 `image` helper entry already controls this unit. Preserve your other model entries
 and timeouts. Back up the old unit, broker package and configuration before rollout.
 
@@ -67,5 +77,6 @@ below the output resolution. Clients cannot override steps, samplers or render s
 
 Validate a cold image, native and legacy dimensions, authenticated artifact access,
 gateway archiving, GPU release and text/speech handoff before declaring rollout
-complete. To roll back, drain requests, stop the broker, restore its previous package,
+complete. To roll back on Docker, follow [deploy/README.md](deploy/README.md#rollback). On the
+legacy deployment, drain requests, stop the broker, restore its previous package,
 image unit and config, reload systemd and restart the broker.
