@@ -1,0 +1,21 @@
+# avifors-controller allowlist. Install root-owned, mode 0644, at /etc/avifors/workers.yaml; it is
+# mounted read-only into the controller only (the broker never sees it).
+#
+# The broker can name a role, never a container. The controller acts only on the container listed
+# here, and only if Docker reports it with the labels
+#   com.docker.compose.project=<project>   (set by compose from compose.yaml's `name`)
+#   org.team-aer.avifors.role=<role>       (set in compose.yaml)
+# stop_timeout is the SIGTERM grace in seconds before Docker kills the worker; keep it below the
+# model's release_timeout in config.yaml (the broker abandons a stop after that).
+project: avifors
+socket: /run/avifors/control.sock
+socket_group: 990 # the broker's gid (the avifors group on the host)
+gpu_free_mib: 12000 # `gpu-free` passes only when every GPU has at least this much free memory
+workers:
+  text: {container: avifors-w-text, stop_timeout: 5}
+  image: {container: avifors-w-image, stop_timeout: 8}
+  stt: {container: avifors-w-stt, stop_timeout: 10}
+  stt-qwen: {container: avifors-w-stt-qwen, stop_timeout: 10}
+  decision: {container: avifors-w-decision, stop_timeout: 10}
+  decision-hedwig: {container: avifors-w-decision-hedwig, stop_timeout: 10}
+  decision-guard: {container: avifors-w-decision-guard, stop_timeout: 10}

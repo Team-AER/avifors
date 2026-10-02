@@ -7,18 +7,20 @@ name = "avifors"
 version = "0.4.0"
 description = "Demand-loaded GPU inference with bounded leases and multi-user scheduling"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.14"
 license = "MIT"
 authors = [{name = "Team AER"}]
-dependencies = ["aiohttp>=3.12.15,<4", "PyYAML>=6.0.2,<7", "Pillow>=11.3,<13"]
+dependencies = ["aiohttp>=3.13,<4", "PyYAML>=6.0.3,<7", "Pillow>=11.3,<13"]
 
 [project.optional-dependencies]
-audio = ["numpy>=1.26,<3", "onnxruntime>=1.20,<2"]
-decision = ["laya>=0.3.7", "onnxruntime>=1.20,<2"]
+audio = ["numpy>=2.3.2,<3", "onnxruntime>=1.24.1,<2"]
+decision = ["laya>=0.3.7", "onnxruntime>=1.24.1,<2"]
 test = ["pytest>=8,<10", "pytest-asyncio>=1,<2", "pytest-aiohttp>=1,<2", "ruff>=0.12,<1"]
 
 [project.scripts]
 avifors = "avifors.server:main"
+avifors-controller = "avifors.controller:main"
+avifors-workerctl = "avifors.workerctl:main"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

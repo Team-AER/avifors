@@ -1,0 +1,134 @@
+# Broker configuration for the Docker deployment (deploy/docker/compose.yaml).
+#
+# Identical to the systemd configuration except for the worker commands: every
+#   [sudo, /usr/local/sbin/avifors-worker, ACTION, ROLE]  becomes  [avifors-workerctl, ACTION, ROLE]
+#   [/usr/local/bin/avifors-gpu-free]                     becomes  [avifors-workerctl, gpu-free]
+# Exit codes are unchanged, so nothing else in this file differs. Convert the production file
+# rather than starting from this example (deploy/README.md, "Docker deployment"); keep it
+# root:root mode 0644 at /etc/avifors/config.yaml, where the broker container reads it.
+server:
+  host: 0.0.0.0 # the broker uses host networking; the host firewall (AVIFORS-IN) guards :8000
+  port: 8000
+  policy: latency
+  max_pending: 64
+  admin_key_env: AVIFORS_ADMIN_KEY
+  store: /var/lib/avifors/images
+  public_base: http://localhost:8000/generated
+  drain_margin: 15
+  release_check: [avifors-workerctl, gpu-free]
+  lanes:
+    cpu: {capacity_mib: 10000}
+  audio:
+    store: /var/lib/avifors/audio
+    vad_model: /var/lib/avifors/stt-models/silero_vad.onnx
+users:
+  - name: example-user
+    key_env: AVIFORS_USER_KEY
+    models: ["*"]
+    max_pending: 8
+defaults:
+  idle_timeout: 300
+  max_hold: 300
+  max_runtime: 300
+  queue_timeout: 300
+  activation_timeout: 180
+  release_timeout: 15
+models:
+  - id: your-text-model
+    upstream: http://127.0.0.1:18000
+    start: [avifors-workerctl, start, text]
+    stop: [avifors-workerctl, stop, text]
+    verify_stopped: [avifors-workerctl, verify, text]
+    concurrency: 4
+    parameters: {route: text}
+
+  - id: your-image-model
+    kind: sdapi
+    upstream: http://127.0.0.1:1234
+    health_path: /v1/models
+    paths: [/v1/images/generations]
+    start: [avifors-workerctl, start, image]
+    stop: [avifors-workerctl, stop, image]
+    verify_stopped: [avifors-workerctl, verify, image]
+    concurrency: 1
+    max_pending: 3
+    activation_timeout: 240
+    queue_timeout: 480
+    release_timeout: 20
+    parameters:
+      route: image
+      default_size: 640x640
+      sizes: [512x512, 640x640, 512x768, 768x512, 1024x1024, 768x1152, 1152x768]
+      render_sizes: {512x512: 1024x1024, 640x640: 1024x1024, 512x768: 768x1152, 768x512: 1152x768}
+      steps: 4
+      cfg_scale: 1
+      sampler_name: euler
+      scheduler: flux2
+      negative_prompt_mode: instruction
+
+  - id: aer-stt-v1
+    kind: stt
+    upstream: http://127.0.0.1:18002
+    paths: [/v1/audio/transcriptions]
+    start: [avifors-workerctl, start, stt]
+    stop: [avifors-workerctl, stop, stt]
+    verify_stopped: [avifors-workerctl, verify, stt]
+    max_pending: 4
+    activation_timeout: 240
+    release_timeout: 20
+    queue_timeout: 480
+    parameters:
+      route: stt
+      language_models: {en: aer-stt-qwen3, eng: aer-stt-qwen3, eng_Latn: aer-stt-qwen3}
+
+  - id: aer-stt-qwen3
+    kind: stt
+    upstream: http://127.0.0.1:18003
+    paths: [/v1/audio/transcriptions]
+    start: [avifors-workerctl, start, stt-qwen]
+    stop: [avifors-workerctl, stop, stt-qwen]
+    verify_stopped: [avifors-workerctl, verify, stt-qwen]
+    max_pending: 4
+    activation_timeout: 240
+    release_timeout: 20
+    queue_timeout: 480
+    parameters: {route: stt-qwen}
+
+  - id: aer-laya
+    kind: decision
+    lane: cpu
+    memory_mib: 3000
+    upstream: http://127.0.0.1:18004
+    start: [avifors-workerctl, start, decision]
+    stop: [avifors-workerctl, stop, decision]
+    verify_stopped: [avifors-workerctl, verify, decision]
+    idle_timeout: 86400
+    max_hold: 3600
+    max_runtime: 60
+    parameters: {route: decision}
+
+  - id: aer-laya-hedwig
+    kind: decision
+    lane: cpu
+    memory_mib: 3000
+    upstream: http://127.0.0.1:18005
+    start: [avifors-workerctl, start, decision-hedwig]
+    stop: [avifors-workerctl, stop, decision-hedwig]
+    verify_stopped: [avifors-workerctl, verify, decision-hedwig]
+    idle_timeout: 86400
+    max_hold: 3600
+    max_runtime: 60
+    parameters: {route: decision}
+
+  - id: aer-laya-guard
+    kind: decision
+    lane: cpu
+    memory_mib: 3000
+    upstream: http://127.0.0.1:18006
+    start: [avifors-workerctl, start, decision-guard]
+    stop: [avifors-workerctl, stop, decision-guard]
+    verify_stopped: [avifors-workerctl, verify, decision-guard]
+    idle_timeout: 86400
+    max_hold: 3600
+    max_runtime: 60
+    parameters: {route: decision}

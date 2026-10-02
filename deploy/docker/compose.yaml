@@ -1,0 +1,311 @@
+# Avifors on Docker: broker + root controller sidecar, and seven on-demand workers.
+#
+#   docker compose -f deploy/docker/compose.yaml build                     # broker/controller images
+#   docker compose -f deploy/docker/compose.yaml --profile workers build   # worker images (slow)
+#   docker compose -f deploy/docker/compose.yaml --profile workers create  # workers: create only
+#   docker compose -f deploy/docker/compose.yaml up -d broker              # starts controller first
+#
+# Workers are only ever *created* by compose. The broker starts and stops them on demand through
+# avifors-controller (the only service with the Docker socket), which acts solely on the
+# containers named in /etc/avifors/workers.yaml that carry this project's labels. Never
+# `up` the workers profile: a worker started outside the broker holds the GPU behind its back.
+#
+# Host paths default to production's and can be moved with AVIFORS_ETC / AVIFORS_DATA; see
+# .env.example for every variable and deploy/README.md for the cutover.
+name: avifors
+
+x-logging: &logging
+  driver: journald
+  options:
+    tag: "{{.Name}}"
+
+# Shared by every worker: created by `--profile workers create`, never restarted by Docker.
+x-worker: &worker
+  profiles: [workers]
+  restart: "no"
+  logging: *logging
+  networks: [workers]
+  security_opt: ["no-new-privileges:true"]
+
+x-avifors-image: &avifors-image
+  image: avifors:${AVIFORS_TAG:-local}
+  build:
+    context: ../..
+    dockerfile: deploy/docker/avifors.Dockerfile
+
+x-decision: &decision
+  <<: *worker
+  image: avifors-decision:${AVIFORS_TAG:-local}
+  build:
+    context: ../..
+    dockerfile: deploy/docker/avifors-decision.Dockerfile
+  user: "996:990"
+  read_only: true
+  tmpfs: [/tmp]
+  cap_drop: [ALL]
+  # CPU lane: no NVIDIA runtime, so no GPU device exists in the container at all.
+  environment:
+    CUDA_VISIBLE_DEVICES: ""
+    OMP_NUM_THREADS: "3"
+    TOKENIZERS_PARALLELISM: "false"
+    HF_HUB_OFFLINE: "1"
+    TRANSFORMERS_OFFLINE: "1"
+    HF_HOME: /var/lib/avifors/.cache/huggingface
+  mem_limit: 4g
+  memswap_limit: 4g # equal to mem_limit: no swap, like MemorySwapMax=0
+  stop_grace_period: 10s
+
+services:
+  controller:
+    <<: *avifors-image
+    command: [avifors-controller, --config, /etc/avifors/workers.yaml]
+    user: "0:0"
+    # Membership of the broker's group lets root hand the socket to gid 990 without CAP_CHOWN.
+    group_add: ["990"]
+    network_mode: none
+    # Not read_only: the NVIDIA runtime hook mounts driver files into the rootfs and refreshes its
+    # ld.so.cache. GPU containers stay writable until read_only is verified with the host's toolkit.
+    # nvidia-smi for `gpu-free`: the utility capability injects only the driver's management
+    # tools and NVML, not compute.
+    runtime: nvidia
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: utility
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${AVIFORS_ETC:-/etc/avifors}/workers.yaml:/etc/avifors/workers.yaml:ro
+      - control:/run/avifors
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test: [CMD, avifors-workerctl, --wait, "2", ping]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+      start_interval: 1s
+    restart: unless-stopped
+    logging: *logging
+
+  broker:
+    <<: *avifors-image
+    command: [avifors, --config, /etc/avifors/config.yaml]
+    user: "996:990"
+    # REQUIRED: host networking keeps :8000 behind the host's iptables INPUT chain (AVIFORS-IN) and
+    # lets the broker reach the workers' loopback ports exactly as before. A published port would
+    # be DNATed through FORWARD and bypass AVIFORS-IN.
+    network_mode: host
+    env_file:
+      - path: ${AVIFORS_ETC:-/etc/avifors}/secrets.env
+        required: true
+    environment:
+      AVIFORS_CONTROL_SOCKET: /run/avifors/control.sock
+    volumes:
+      - ${AVIFORS_ETC:-/etc/avifors}/config.yaml:/etc/avifors/config.yaml:ro
+      - ${AVIFORS_DATA:-/var/lib/avifors}/images:/var/lib/avifors/images
+      - ${AVIFORS_DATA:-/var/lib/avifors}/audio:/var/lib/avifors/audio
+      - ${AVIFORS_DATA:-/var/lib/avifors}/stt-models/silero_vad.onnx:/var/lib/avifors/stt-models/silero_vad.onnx:ro
+      - control:/run/avifors
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    # tini is the image's entrypoint (PID 1): it reaps ffmpeg/workerctl children and forwards
+    # SIGTERM, i.e. what `init: true` would add, so it is not doubled here.
+    # Shutdown cancels work, then stops and verifies every worker through the controller.
+    stop_grace_period: 90s
+    healthcheck:
+      # /health needs an identity. Without AVIFORS_HEALTHCHECK_KEY (a user key from secrets.env)
+      # a 401 still proves the broker is serving; with it, a scheduler fault (503) turns unhealthy.
+      test:
+        - CMD
+        - python
+        - -c
+        - |
+          import os, urllib.error, urllib.request
+          key = os.environ.get("AVIFORS_HEALTHCHECK_KEY", "")
+          url = os.environ.get("AVIFORS_HEALTHCHECK_URL", "http://127.0.0.1:8000/health")
+          request = urllib.request.Request(url, headers={"Authorization": "Bearer " + key} if key else {})
+          try:
+              urllib.request.urlopen(request, timeout=5)
+          except urllib.error.HTTPError as error:
+              raise SystemExit(error.code != 401 or bool(key))
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    depends_on:
+      controller:
+        condition: service_healthy
+    restart: unless-stopped
+    logging: *logging
+
+  # ── workers (profile "workers"): created, never started, by compose ──────────────────────────
+
+  text:
+    <<: *worker
+    # Vendor image, not rebuilt. Pin it by digest in .env (AVIFORS_VLLM_IMAGE).
+    image: ${AVIFORS_VLLM_IMAGE:-vllm/vllm-openai:v0.26.0}
+    container_name: avifors-w-text
+    labels:
+      org.team-aer.avifors.role: text
+    # The model and engine flags of the old `avifors-text` container (see .env.example).
+    command: ${AVIFORS_TEXT_ARGS:-}
+    runtime: nvidia
+    ipc: host
+    env_file:
+      - path: ${AVIFORS_ETC:-/etc/avifors}/vllm.env
+        required: true
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+    ports: ["127.0.0.1:18000:8000"]
+    volumes:
+      - ${AVIFORS_DATA:-/var/lib/avifors}/hf-cache:/root/.cache/huggingface
+      - vllm-cache:${AVIFORS_VLLM_CACHE_TARGET:-/root/.cache/vllm}
+      - gemma-config:${AVIFORS_GEMMA_CONFIG_TARGET:-/config}:ro
+    stop_grace_period: 5s
+
+  image:
+    <<: *worker
+    image: avifors-image:${AVIFORS_TAG:-local}
+    build:
+      context: ../..
+      dockerfile: deploy/docker/avifors-image.Dockerfile
+    container_name: avifors-w-image
+    labels:
+      org.team-aer.avifors.role: image
+    user: "996:990"
+    command:
+      - --diffusion-model
+      - /var/lib/avifors/image-models/flux2-klein-9b/transformer/flux-2-klein-9b-fp8.safetensors
+      - --llm
+      - /var/lib/avifors/image-models/flux2-klein-9b/text_encoder/Qwen3-8B-Q8_0.gguf
+      - --vae
+      - /var/lib/avifors/image-models/flux2-klein-9b/vae/vae/diffusion_pytorch_model.safetensors
+      - --listen-ip
+      - 0.0.0.0 # inside the container; published on the host's loopback only
+      - --listen-port
+      - "1234"
+      - --threads
+      - "6"
+      - --offload-to-cpu
+      - --diffusion-fa
+      - --vae-tiling
+      - --mmap
+    runtime: nvidia
+    ports: ["127.0.0.1:1234:1234"]
+    volumes:
+      - ${AVIFORS_DATA:-/var/lib/avifors}/image-models:/var/lib/avifors/image-models:ro
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    mem_limit: 28g
+    pids_limit: 512
+    stop_grace_period: 8s
+
+  stt:
+    <<: *worker
+    # Python 3.12 exception: see avifors-stt-omni.Dockerfile.
+    image: avifors-stt-omni:${AVIFORS_TAG:-local}
+    build:
+      context: ../..
+      dockerfile: deploy/docker/avifors-stt-omni.Dockerfile
+    container_name: avifors-w-stt
+    labels:
+      org.team-aer.avifors.role: stt
+    user: "996:990"
+    command: [--model, avifors_omni_3b_v2, --host, 0.0.0.0, --port, "18002"]
+    runtime: nvidia
+    ports: ["127.0.0.1:18002:18002"]
+    volumes:
+      - ${AVIFORS_ETC:-/etc/avifors}/stt-assets:/etc/avifors/stt-assets:ro
+      - ${AVIFORS_DATA:-/var/lib/avifors}/stt-models:/var/lib/avifors/stt-models:ro
+      - ${AVIFORS_DATA:-/var/lib/avifors}/fairseq2:/var/lib/avifors/fairseq2
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    stop_grace_period: 10s
+
+  stt-qwen:
+    <<: *worker
+    image: avifors-stt-qwen:${AVIFORS_TAG:-local}
+    build:
+      context: ../..
+      dockerfile: deploy/docker/avifors-stt-qwen.Dockerfile
+    container_name: avifors-w-stt-qwen
+    labels:
+      org.team-aer.avifors.role: stt-qwen
+    user: "996:990"
+    command:
+      [--host, 0.0.0.0, --port, "18003", --model, /var/lib/avifors/stt-models/qwen3-asr-1.7b]
+    runtime: nvidia
+    environment:
+      HF_HOME: /var/lib/avifors/.cache/huggingface
+    ports: ["127.0.0.1:18003:18003"]
+    volumes:
+      - ${AVIFORS_DATA:-/var/lib/avifors}/stt-models:/var/lib/avifors/stt-models:ro
+      - type: bind
+        source: ${AVIFORS_DATA:-/var/lib/avifors}/.cache/huggingface
+        target: /var/lib/avifors/.cache/huggingface
+        read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    stop_grace_period: 10s
+
+  decision:
+    <<: *decision
+    container_name: avifors-w-decision
+    labels:
+      org.team-aer.avifors.role: decision
+    command:
+      [--checkpoint, /var/lib/avifors/decision/aer-laya, --threads, "3", --host, 0.0.0.0, --port, "18004",
+       --card, aer-laya]
+    ports: ["127.0.0.1:18004:18004"]
+    volumes:
+      - ${AVIFORS_DATA:-/var/lib/avifors}/decision/aer-laya:/var/lib/avifors/decision/aer-laya:ro
+      - &hf-cache
+        type: bind
+        source: ${AVIFORS_DATA:-/var/lib/avifors}/.cache/huggingface
+        target: /var/lib/avifors/.cache/huggingface
+        read_only: true
+
+  decision-hedwig:
+    <<: *decision
+    container_name: avifors-w-decision-hedwig
+    labels:
+      org.team-aer.avifors.role: decision-hedwig
+    command:
+      [--checkpoint, /var/lib/avifors/decision/aer-laya-hedwig, --threads, "3", --host, 0.0.0.0, --port,
+       "18005", --card, aer-laya-hedwig]
+    ports: ["127.0.0.1:18005:18005"]
+    volumes:
+      - ${AVIFORS_DATA:-/var/lib/avifors}/decision/aer-laya-hedwig:/var/lib/avifors/decision/aer-laya-hedwig:ro
+      - *hf-cache
+
+  decision-guard:
+    <<: *decision
+    container_name: avifors-w-decision-guard
+    labels:
+      org.team-aer.avifors.role: decision-guard
+    command:
+      [--checkpoint, /var/lib/avifors/decision/aer-laya-guard, --threads, "3", --host, 0.0.0.0, --port,
+       "18006", --card, aer-laya-guard]
+    ports: ["127.0.0.1:18006:18006"]
+    volumes:
+      - ${AVIFORS_DATA:-/var/lib/avifors}/decision/aer-laya-guard:/var/lib/avifors/decision/aer-laya-guard:ro
+      - *hf-cache
+
+networks:
+  # Workers listen on 0.0.0.0 inside this bridge and are published on the host's 127.0.0.1 only.
+  workers: {}
+
+volumes:
+  # Holds control.sock (root:990, 0660). Initialised from the image's /run/avifors (root:990 0750).
+  control: {}
+  # The old avifors-text container's volumes, reused so compile caches and the Gemma config carry
+  # over. Their names and mount targets must match `docker inspect avifors-text` (see .env.example).
+  vllm-cache:
+    external: true
+    name: ${AVIFORS_VLLM_CACHE_VOLUME:-vllm-cache}
+  gemma-config:
+    external: true
+    name: ${AVIFORS_GEMMA_CONFIG_VOLUME:-gemma-config}
