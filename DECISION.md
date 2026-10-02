@@ -141,10 +141,13 @@ All three sit in the `cpu` pool at `memory_mib: 3000` each, so the pool capacity
 
 1. Copy the checkpoint to `/var/lib/avifors/decision/aer-laya` (no network fetch at runtime).
 2. Create `/opt/avifors-decision-venv`, install `.[decision]`; install the unit and the updated
-   `/usr/local/sbin/avifors-worker` (root-owned, `decision` allowlisted).
-3. Add the `kind: decision`, `lane: cpu` model to `/etc/avifors/config.yaml` (keep mode 644) and run
-   `avifors --check`.
-4. In a maintenance window (`/admin/state` idle), restart the broker; verify with
+   `/usr/local/sbin/avifors-worker` (root-owned, the worker allowlisted).
+3. Add the worker's `start`, `stop` and `verify` commands to the broker's sudoers entry and validate it
+   with `visudo -cf`. Every decision worker needs its own three lines: without them the broker exits
+   during startup recovery with "worker command failed (exit 1)".
+4. Add the `kind: decision`, `lane: cpu` model to `/etc/avifors/config.yaml` (keep mode 644), raise the
+   pool's `capacity_mib` if the new model does not fit beside the residents, and run `avifors --check`.
+5. In a maintenance window (`/admin/state` idle), restart the broker; verify with
    `scripts/systemone_conformance.py` and a real request through llm-proxy.
-5. llm-proxy (LiteLLM) has no System One route: expose `/v1/systemone` as a pass-through endpoint so
+6. llm-proxy (LiteLLM) has no System One route: expose `/v1/systemone` as a pass-through endpoint so
    apps keep calling the proxy, not Avifors directly.
