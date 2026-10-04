@@ -125,7 +125,8 @@ Explicit cancellation also deletes failed-job audio. Transcripts and job metadat
 after the configured retention; transcripts are never included in routine logs
 or traces. Use encrypted storage if required by your deployment. Back up SQLite
 with its backup API or a consistent volume snapshot, not by copying only the
-main database while WAL writes are active. LXC backups cover the store on Atlas.
+main database while WAL writes are active. Include the audio store in your
+deployment backup and recovery plan.
 
 ## Worker installation
 
@@ -139,7 +140,9 @@ The broker image already contains FFmpeg and `avifors[audio]` for CPU VAD.
 
 **Python 3.12 is a time-limited exception for `avifors-stt-omni` only.** omnilingual-asr declares
 `requires-python <=3.12` and fairseq2n publishes wheels only up to CPython 3.12, so the
-Omnilingual engine cannot run on Python 3.14 yet. Every other Avifors image uses Python 3.14.
+Omnilingual engine cannot run on Python 3.14 yet. The broker, Qwen and decision
+images built here use Python 3.14; the image
+worker is native C++, and the vendor vLLM image manages its own Python runtime.
 Remove the exception (rebase the image on `python:3.14-slim` and refresh the lock) as soon as
 fairseq2/fairseq2n and omnilingual-asr ship Python 3.14 support. Qwen3-ASR has no such
 constraint; its image moved to the first torch release with both CUDA 12.8 and Python 3.14

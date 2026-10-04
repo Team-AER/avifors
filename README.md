@@ -1,3 +1,5 @@
+<img src="docs/assets/avifors.svg" alt="Avifors scheduling mark" width="64" height="64">
+
 # Avifors
 
 Demand-loaded inference on one GPU: keep your inference engines and API contracts,
@@ -6,7 +8,58 @@ share GPU residency between them, and bound how long one workload can monopolize
 Avifors sits behind your existing OpenAI-compatible gateway. It supports vLLM,
 stable-diffusion.cpp through an SD API adapter, and other HTTP workers controlled by
 administrator-provided start/stop commands. It does not download models or replace
-vLLM's token scheduler.
+vLLM's token scheduler. This is a self-hosted Team AER project; there is no
+hosted inference service in this repository.
+
+[Project landing page](https://aer.app/avifors/) ·
+[Docker deployment](deploy/README.md#docker-deployment) ·
+[Speech guide](STT.md) · [Decision models](DECISION.md) ·
+[Image profiles](FLUX2.md)
+
+## Features
+
+- **Demand-loaded residency:** activate the requested worker, drain and release it
+  before handing the GPU to another model. Optional validated vLLM sleep reduces reload work.
+- **Four scheduling policies:** latency, FIFO, measured-service-time fairness and
+  throughput, with bounded ownership periods and per-request deadlines.
+- **Multiple users:** bearer-key authentication, model allowlists, pending-work
+  limits, separate administrator access and user-isolated generated artifacts.
+- **Text and images:** pass-through OpenAI-compatible HTTP workers and an SD API
+  adapter with persistent PNGs and administrator-defined render profiles.
+- **Durable speech jobs:** optional Omnilingual/Qwen workers, chunk checkpoints,
+  polling, cancellation, retries and text/JSON/SRT/VTT exports.
+- **Decision workers:** typed choice, yes/no and score answers through the
+  System One API; independent lanes can keep CPU models resident together.
+- **Operations:** authenticated catalogs, scoped worker health, Prometheus metrics,
+  aggregate residency state and optional OTLP/HTTP traces.
+
+## How it works
+
+```mermaid
+flowchart LR
+    Client["Clients / OpenAI-compatible SDKs"] --> Gateway["Your gateway: TLS and routing"]
+    Gateway --> Broker["Avifors: identity, limits and HTTP APIs"]
+    Broker --> GPU["Exclusive GPU lane: queues and bounded leases"]
+    GPU --> Text["Text: vLLM / HTTP worker"]
+    GPU --> Image["Images: SD API worker"]
+    GPU --> Speech["Speech: Omnilingual / Qwen worker"]
+    Broker --> CPU["CPU lane: exclusive or capacity pool"]
+    CPU --> Decision["Decision workers: Laya checkpoints"]
+    Broker --> Store[("PNG artifacts and durable audio job store")]
+    Broker --> Control["Docker controller: allowlisted worker lifecycle"]
+    Control -. "start / stop / verify" .-> Text
+    Control -. "start / stop / verify" .-> Image
+    Control -. "start / stop / verify" .-> Speech
+    Control -. "start / stop / verify" .-> Decision
+```
+
+The Docker controller has the Docker socket; the broker has only its Unix control
+socket. The GPU lane owns one configured worker at a time. A lane with
+`capacity_mib` uses pool scheduling and requires each model's `memory_mib`;
+without a capacity it uses exclusive scheduling. Residency accounting is based
+on administrator declarations, so validate memory use on the target hardware.
+Workers, drivers and weights are separate dependencies. Regular pending inference
+is volatile; the optional audio subsystem persists committed jobs and checkpoints.
 
 ## Install
 
@@ -15,12 +68,14 @@ Python 3.14+ is required. Production runs in Docker: see the
 speech worker image is a temporary Python 3.12 exception (see [STT.md](STT.md)).
 
 ```sh
-python3 -m venv .venv
+git clone https://github.com/Team-AER/avifors.git
+cd avifors
+python3.14 -m venv .venv
 .venv/bin/pip install '.[test]'
 export AVIFORS_USER_KEY='replace-with-a-long-random-secret'
 export AVIFORS_ADMIN_KEY='replace-with-a-different-long-random-secret'
-avifors --config examples/config.yaml --check
-avifors --config examples/config.yaml
+.venv/bin/avifors --config examples/config.yaml --check
+.venv/bin/avifors --config examples/config.yaml
 ```
 
 Adapt the example's model IDs, paths and worker commands first. Model weights,
@@ -133,17 +188,13 @@ allow another container to use the managed GPU. Retain old workers/configuration
 rollback until text, images, switching, idle release and boot recovery are verified.
 
 ```sh
-python -m pytest -q
-ruff check avifors tests
+.venv/bin/python -m pytest -q
+.venv/bin/ruff check avifors tests
 ```
 
 Tests use fake workers and short clocks to exercise admission, cancellation,
 streaming, authentication and lifecycle faults without a GPU. Real model performance,
 GPU release and sleep compatibility must also be tested on the target hardware.
-
-MIT covers Avifors code only. Inference engines, model weights and vendor dependencies
-retain their own licenses. No weights, private configurations or credentials are
-included in this repository.
 
 ## Speech transcription
 
@@ -160,3 +211,18 @@ choice / yes-no / score questions, probabilities instead of text). Run them in t
 (e.g. `lane: cpu`) so decisions never evict the GPU-resident model. A lane with `capacity_mib`
 keeps every model that fits resident together (pool mode, models declare `memory_mib`); lanes
 without one keep exclusive single-owner scheduling. See [DECISION.md](DECISION.md).
+
+## License and acknowledgements
+
+[MIT](LICENSE) covers Avifors code only. Avifors integrates with independent
+projects including [vLLM](https://github.com/vllm-project/vllm),
+[stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp),
+[Omnilingual ASR](https://github.com/facebookresearch/omnilingual-asr),
+[Qwen3-ASR](https://github.com/QwenLM/Qwen3-ASR),
+[Silero VAD](https://github.com/snakers4/silero-vad) and
+[Laya](https://github.com/NandhaKishorM/laya). Thanks to their maintainers.
+The worker guides record the relevant runtime and model revisions.
+
+Inference engines, model weights and vendor dependencies
+retain their own licenses. No weights, private configurations or credentials are
+included in this repository.

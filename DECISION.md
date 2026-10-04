@@ -86,10 +86,10 @@ In pool mode, every model that fits stays loaded together. Each pooled model dec
 - A pooled `gpu` lane cannot use `release_check`, because that check asserts an empty device.
 
 
-Models in one `lane` share one exclusive residency slot. The default lane `gpu` is the managed GPU;
-a decision model with `lane: cpu` gets its own scheduler, so scoring a ticket never evicts the
-resident text, image or speech model (a Gemma reload costs ~150 s). Each lane has its own queue
-limits; only the GPU lane runs `release_check`. `/admin/state` reports other lanes under `lanes`,
+A decision model with `lane: cpu` uses a separate scheduler, so scoring a ticket
+does not evict a resident text, image or speech model in the GPU lane. Each lane
+has its own queue limits; only an exclusive GPU lane runs `release_check`.
+`/admin/state` reports other lanes under `lanes`,
 `/metrics` exports `avifors_lane_{active,queued,up}`. A decision model may also stay in the `gpu`
 lane when it should be time-sliced on the GPU like any other worker.
 
@@ -142,7 +142,10 @@ without swap:
 The legacy units in `deploy/decision/` (venv from `pip install '.[decision]'`, same settings) are
 kept for the rollback window only.
 
-All three sit in the `cpu` pool at `memory_mib: 3000` each, so the pool capacity is 10000.
+All three sit in the `cpu` pool at `memory_mib: 3000` each, within the
+example pool capacity of `10000` MiB. This is declared residency
+accounting, separate from each container's enforced 4 GiB memory limit. Measure
+actual memory use and leave host headroom when sizing a pool.
 
 ## Deployment checklist
 
@@ -156,7 +159,7 @@ For a new decision model on the Docker deployment ([deploy/README.md](deploy/REA
    and the broker exit during startup recovery.
 3. Add the `kind: decision`, `lane: cpu` model with `[avifors-workerctl, start|stop|verify, <role>]`
    commands to `/etc/avifors/config.yaml` (keep root:root mode 644), raise the pool's `capacity_mib`
-   if the new model does not fit beside the residents, and run `avifors --check` in the broker image.
+   if the new model does not fit beside the residents, and run `avifors --config /etc/avifors/config.yaml --check` in the broker image.
 4. In a maintenance window (`/admin/state` idle), stop the broker, `docker compose --profile workers
    create <service>`, start the broker; verify with `scripts/systemone_conformance.py` and a real
    request through llm-proxy.
