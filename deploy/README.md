@@ -66,8 +66,11 @@ until acceptance; rollback must stop Avifors before restoring their GPU access.
 ## Docker deployment
 
 Everything runs in containers from `deploy/docker/compose.yaml` (compose project `avifors`), so
-OS upgrades no longer touch the Python runtimes. All images use Python 3.14, except the
-Omnilingual speech worker (see [the exception](#python-312-exception-avifors-stt-omni)).
+OS upgrades no longer touch the Python runtimes. The broker/controller, Qwen
+speech and decision images built here use Python 3.14.
+The Omnilingual speech worker uses Python 3.12 (see
+[the exception](#python-312-exception-avifors-stt-omni)); the image worker is native
+C++, and the vendor vLLM image manages its own Python runtime.
 
 | Service | Image | Runs as | Notes |
 |---|---|---|---|
@@ -224,7 +227,8 @@ config; no sudoers change.
 
 ### Python 3.12 exception (avifors-stt-omni)
 
-All Avifors images run Python 3.14 except `avifors-stt-omni`. omnilingual-asr requires Python
+Of the Python images built in this repository, only `avifors-stt-omni` uses
+Python 3.12. omnilingual-asr requires Python
 3.12 or older and fairseq2n publishes wheels only up to CPython 3.12, so that one image is a
 **time-limited exception** on `python:3.12-slim` with production's `deploy/stt/requirements.lock`
 (torch 2.8.0 CUDA 12.8, fairseq2 0.6). Move it to Python 3.14 and remove this exception as soon as
